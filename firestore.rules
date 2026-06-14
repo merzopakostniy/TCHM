@@ -1,0 +1,104 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function role() {
+      return signedIn() && userDoc().data.role is string
+        ? userDoc().data.role
+        : 'viewer';
+    }
+
+    function assignedColumnId() {
+      return signedIn() ? userDoc().data.assignedColumnId : null;
+    }
+
+    function canEditAny() {
+      return role() in ['admin', 'tchm', 'operator'];
+    }
+
+    function canEditColumn(columnId) {
+      return canEditAny() ||
+        (role() == 'instructor' && assignedColumnId() == columnId);
+    }
+
+    function hasPersonnelNumber(data) {
+      return data.personnelNumber is string && data.personnelNumber.size() > 0;
+    }
+
+    function allowedTchmProfile(data) {
+      return
+        (data.personnelNumber == '1145' && data.displayName == 'Королев М.А.') ||
+        (data.personnelNumber == '489' && data.displayName == 'Моисей С.В.') ||
+        (data.personnelNumber == '462' && data.displayName == 'Кузнецов А.Л.') ||
+        (data.personnelNumber == '130' && data.displayName == 'Булыгин В.В.') ||
+        (data.personnelNumber == '1004' && data.displayName == 'Баканов А.А.') ||
+        (data.personnelNumber == '384' && data.displayName == 'Гаврик С.А.') ||
+        (data.personnelNumber == '502' && data.displayName == 'Павлов М.А.') ||
+        (data.personnelNumber == '322' && data.displayName == 'Никифоров А.В.') ||
+        (data.personnelNumber == '392' && data.displayName == 'Двойцын Н.С.') ||
+        (data.personnelNumber == '628' && data.displayName == 'Симонов С.В.') ||
+        (data.personnelNumber == '342' && data.displayName == 'Акиньшин П.В.') ||
+        (data.personnelNumber == '169' && data.displayName == 'Рынкис А.В.') ||
+        (data.personnelNumber == '1134' && data.displayName == 'Попов Д.П.') ||
+        (data.personnelNumber == '1005' && data.displayName == 'Лихачев А.Е.') ||
+        (data.personnelNumber == '532' && data.displayName == 'Савинкин А.В.') ||
+        (data.personnelNumber == '344' && data.displayName == 'Алексеев А.В.') ||
+        (data.personnelNumber == '1576' && data.displayName == 'Логинов Д.Н.') ||
+        (data.personnelNumber == '150' && data.displayName == 'Зудин И.В.') ||
+        (data.personnelNumber == '742' && data.displayName == 'Федосков А.И.') ||
+        (data.personnelNumber == '1040' && data.displayName == 'Нарядчиков К.А.') ||
+        (data.personnelNumber == '2680' && data.displayName == 'Агапитов В.А.') ||
+        (data.personnelNumber == '1984' && data.displayName == 'Покрышкин А.Н.') ||
+        (data.personnelNumber == '966' && data.displayName == 'Архипов А.С.') ||
+        (data.personnelNumber == '941' && data.displayName == 'Серяпин С.И.') ||
+        (data.personnelNumber == '1671' && data.displayName == 'Серков Н.А.');
+    }
+
+    function isSelfLoginProfile(data) {
+      return data.role == 'viewer' ||
+        (
+          data.role == 'tchm' &&
+          hasPersonnelNumber(data) &&
+          allowedTchmProfile(data)
+        );
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == userId
+        && isSelfLoginProfile(request.resource.data);
+      allow update: if signedIn() && (
+        canEditAny() ||
+        (
+          request.auth.uid == userId &&
+          isSelfLoginProfile(request.resource.data)
+        )
+      );
+      allow delete: if canEditAny();
+    }
+
+    match /columns/{columnId} {
+      allow read: if signedIn();
+      allow create, update, delete: if canEditAny();
+    }
+
+    match /machinists/{machinistId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && canEditColumn(request.resource.data.columnId)
+        && request.resource.data.columnId is string;
+      allow update: if signedIn()
+        && canEditColumn(resource.data.columnId)
+        && request.resource.data.columnId == resource.data.columnId;
+      allow delete: if signedIn() && canEditColumn(resource.data.columnId);
+    }
+  }
+}
