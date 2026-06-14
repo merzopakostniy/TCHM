@@ -6,6 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter/services.dart';
 
 import 'firebase_options.dart';
 
@@ -1379,9 +1380,10 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ] else ...[
                             if (_mode == _LoginMode.instructor) ...[
-                              TextField(
+                              _KeyboardTextField(
                                 controller: _personnelNumber,
                                 keyboardType: TextInputType.number,
+                                textInputAction: TextInputAction.next,
                                 decoration: const InputDecoration(
                                   labelText: 'Табельный номер',
                                   prefixIcon: Icon(Icons.badge_outlined),
@@ -1423,9 +1425,10 @@ class _LoginScreenState extends State<LoginScreen> {
                               ],
                               const SizedBox(height: 12),
                             ],
-                            TextField(
+                            _KeyboardTextField(
                               controller: _password,
                               obscureText: true,
+                              textInputAction: TextInputAction.done,
                               decoration: const InputDecoration(
                                 labelText: 'Пароль доступа',
                                 prefixIcon: Icon(Icons.lock_outline),
@@ -1592,8 +1595,9 @@ class _HomeScreenState extends State<HomeScreen> {
               body: ListView(
                 padding: const EdgeInsets.all(12),
                 children: [
-                  TextField(
+                  _KeyboardTextField(
                     controller: _search,
+                    textInputAction: TextInputAction.search,
                     onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
                       isDense: true,
@@ -2236,8 +2240,9 @@ class _MachinistsPane extends StatelessWidget {
                 ),
                 SizedBox(
                   width: 300,
-                  child: TextField(
+                  child: _KeyboardTextField(
                     controller: search,
+                    textInputAction: TextInputAction.search,
                     onChanged: (_) => onSearchChanged(),
                     decoration: const InputDecoration(
                       isDense: true,
@@ -2540,6 +2545,101 @@ String _couplingMark(Machinist machinist) {
     machinist.coupling,
     if (machinist.vn.isNotEmpty) '(${machinist.vn})',
   ].where((part) => part.isNotEmpty).join(' ');
+}
+
+void _showKeyboard(FocusNode focusNode) {
+  focusNode.requestFocus();
+  SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+}
+
+class _KeyboardTextField extends StatefulWidget {
+  const _KeyboardTextField({
+    required this.controller,
+    required this.decoration,
+    this.keyboardType,
+    this.textInputAction,
+    this.obscureText = false,
+    this.onChanged,
+    this.onSubmitted,
+  });
+
+  final TextEditingController controller;
+  final InputDecoration decoration;
+  final TextInputType? keyboardType;
+  final TextInputAction? textInputAction;
+  final bool obscureText;
+  final ValueChanged<String>? onChanged;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<_KeyboardTextField> createState() => _KeyboardTextFieldState();
+}
+
+class _KeyboardTextFieldState extends State<_KeyboardTextField> {
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: widget.controller,
+      focusNode: _focusNode,
+      keyboardType: widget.keyboardType,
+      textInputAction: widget.textInputAction,
+      obscureText: widget.obscureText,
+      decoration: widget.decoration,
+      onChanged: widget.onChanged,
+      onSubmitted: widget.onSubmitted,
+      onTap: () => _showKeyboard(_focusNode),
+    );
+  }
+}
+
+class _KeyboardTextFormField extends StatefulWidget {
+  const _KeyboardTextFormField({
+    required this.controller,
+    required this.decoration,
+    this.textInputAction,
+    this.validator,
+    this.maxLines = 1,
+  });
+
+  final TextEditingController controller;
+  final InputDecoration decoration;
+  final TextInputAction? textInputAction;
+  final FormFieldValidator<String>? validator;
+  final int maxLines;
+
+  @override
+  State<_KeyboardTextFormField> createState() => _KeyboardTextFormFieldState();
+}
+
+class _KeyboardTextFormFieldState extends State<_KeyboardTextFormField> {
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: widget.controller,
+      focusNode: _focusNode,
+      maxLines: widget.maxLines,
+      textInputAction: widget.textInputAction,
+      decoration: widget.decoration,
+      validator: widget.validator,
+      onTap: () => _showKeyboard(_focusNode),
+    );
+  }
 }
 
 class _AppBarPill extends StatelessWidget {
@@ -3151,9 +3251,12 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
+      child: _KeyboardTextFormField(
         controller: controller,
         maxLines: maxLines,
+        textInputAction: maxLines > 1
+            ? TextInputAction.newline
+            : TextInputAction.next,
         decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
         validator: required
             ? (value) {
