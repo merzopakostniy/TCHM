@@ -2417,6 +2417,29 @@ class MachinistCard extends StatelessWidget {
                   ),
                 ),
               ],
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.history,
+                    size: 14,
+                    color: AppPalette.textSecondary,
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      'Изменено: ${_formatDateTime(machinist.updatedAt)} · '
+                      '${machinist.updatedBy.isEmpty ? 'неизвестно' : machinist.updatedBy}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: AppPalette.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -2450,6 +2473,13 @@ String _formatDate(DateTime date, {required bool fourDigitYear}) {
       ? date.year.toString()
       : (date.year % 100).toString().padLeft(2, '0');
   return '$dd.$mm.$year';
+}
+
+String _formatDateTime(DateTime date) {
+  if (date.millisecondsSinceEpoch == 0) return 'нет данных';
+  final hh = date.hour.toString().padLeft(2, '0');
+  final min = date.minute.toString().padLeft(2, '0');
+  return '${_formatDate(date, fourDigitYear: true)} $hh:$min';
 }
 
 String _couplingMark(Machinist machinist) {
