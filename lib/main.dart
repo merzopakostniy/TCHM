@@ -63,9 +63,7 @@ class AppScrollBehavior extends MaterialScrollBehavior {
 
   @override
   ScrollPhysics getScrollPhysics(BuildContext context) {
-    return const BouncingScrollPhysics(
-      parent: AlwaysScrollableScrollPhysics(),
-    );
+    return const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics());
   }
 
   @override
@@ -398,6 +396,8 @@ class Machinist {
     required this.vn,
     required this.tchmName,
     required this.notes,
+    required this.kipExtensionMonths,
+    required this.kipExtensionOrder,
     required this.updatedAt,
     required this.updatedBy,
   });
@@ -416,6 +416,8 @@ class Machinist {
   final String vn;
   final String tchmName;
   final String notes;
+  final int kipExtensionMonths;
+  final String kipExtensionOrder;
   final DateTime updatedAt;
   final String updatedBy;
 
@@ -434,6 +436,8 @@ class Machinist {
     String? vn,
     String? tchmName,
     String? notes,
+    int? kipExtensionMonths,
+    String? kipExtensionOrder,
     DateTime? updatedAt,
     String? updatedBy,
   }) {
@@ -452,6 +456,8 @@ class Machinist {
       vn: vn ?? this.vn,
       tchmName: tchmName ?? this.tchmName,
       notes: notes ?? this.notes,
+      kipExtensionMonths: kipExtensionMonths ?? this.kipExtensionMonths,
+      kipExtensionOrder: kipExtensionOrder ?? this.kipExtensionOrder,
       updatedAt: updatedAt ?? this.updatedAt,
       updatedBy: updatedBy ?? this.updatedBy,
     );
@@ -472,6 +478,8 @@ class Machinist {
       'vn': vn,
       'tchmName': tchmName,
       'notes': notes,
+      'kipExtensionMonths': kipExtensionMonths,
+      'kipExtensionOrder': kipExtensionOrder,
       'updatedAt': Timestamp.fromDate(updatedAt),
       'updatedBy': updatedBy,
       'searchName': fullName.toLowerCase(),
@@ -494,6 +502,8 @@ class Machinist {
       vn: map['vn']?.toString() ?? '',
       tchmName: map['tchmName']?.toString() ?? '',
       notes: map['notes']?.toString() ?? '',
+      kipExtensionMonths: (map['kipExtensionMonths'] as num?)?.toInt() ?? 0,
+      kipExtensionOrder: map['kipExtensionOrder']?.toString() ?? '',
       updatedAt: _dateFromValue(map['updatedAt']),
       updatedBy: map['updatedBy']?.toString() ?? '',
     );
@@ -624,7 +634,13 @@ CheckResult evaluateCheck(
     return CheckResult(discipline: discipline, status: CheckStatus.noData);
   }
   final cls = machinistClassFromRank(machinist.classRank);
-  final due = _addMonths(last, discipline.intervalMonths(cls));
+  final extensionMonths = discipline == CheckDiscipline.kip
+      ? machinist.kipExtensionMonths
+      : 0;
+  final due = _addMonths(
+    last,
+    discipline.intervalMonths(cls) + extensionMonths,
+  );
   final today = DateUtils.dateOnly(now ?? DateTime.now());
   final daysLeft = due.difference(today).inDays;
   final CheckStatus status;
@@ -1349,9 +1365,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(height: 20),
                           if (_mode == null) ...[
                             FilledButton.icon(
-                              onPressed: () => setState(
-                                () => _mode = _LoginMode.instructor,
-                              ),
+                              onPressed: () =>
+                                  setState(() => _mode = _LoginMode.instructor),
                               icon: const Icon(Icons.edit_note_outlined),
                               label: const Text('Войти как инструктор'),
                             ),
@@ -1385,9 +1400,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                           : Icons.check_circle_outline,
                                       size: 18,
                                       color: foundTchmName == null
-                                          ? Theme.of(
-                                              context,
-                                            ).colorScheme.error
+                                          ? Theme.of(context).colorScheme.error
                                           : AppPalette.accent,
                                     ),
                                     const SizedBox(width: 6),
@@ -2340,8 +2353,7 @@ class MachinistCard extends StatelessWidget {
                             'Колонна ${machinist.columnNumber}',
                             if (machinist.classRank.isNotEmpty)
                               'Класс ${machinist.classRank}',
-                            if (machinist.vn.isNotEmpty)
-                              'В/Н ${machinist.vn}',
+                            if (machinist.vn.isNotEmpty) 'В/Н ${machinist.vn}',
                           ].join(' · '),
                           style: const TextStyle(
                             fontSize: 12,
@@ -2405,6 +2417,47 @@ class MachinistCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (machinist.kipExtensionMonths > 0) ...[
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppPalette.surfaceTint,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppPalette.border),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.gavel_outlined,
+                        size: 14,
+                        color: AppPalette.deep,
+                      ),
+                      const SizedBox(width: 5),
+                      Flexible(
+                        child: Text(
+                          [
+                            'КИП +${machinist.kipExtensionMonths} мес.',
+                            if (machinist.kipExtensionOrder.isNotEmpty)
+                              machinist.kipExtensionOrder,
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppPalette.deep,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if (machinist.notes.isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -2640,6 +2693,8 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
   late final TextEditingController _atz;
   late final TextEditingController _coupling;
   late final TextEditingController _notes;
+  late final TextEditingController _kipExtensionOrder;
+  var _kipExtended = false;
   var _couplingFaulty = false;
   var _couplingAuxiliary = false;
   var _saving = false;
@@ -2659,6 +2714,10 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
     _atz = TextEditingController(text: item?.atz ?? '');
     _coupling = TextEditingController(text: item?.coupling ?? '');
     _notes = TextEditingController(text: item?.notes ?? '');
+    _kipExtensionOrder = TextEditingController(
+      text: item?.kipExtensionOrder ?? '',
+    );
+    _kipExtended = (item?.kipExtensionMonths ?? 0) > 0;
     final vn = item?.vn ?? '';
     _couplingAuxiliary = vn.contains('В');
     _couplingFaulty = vn.contains('Н');
@@ -2674,6 +2733,7 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
     _atz.dispose();
     _coupling.dispose();
     _notes.dispose();
+    _kipExtensionOrder.dispose();
     super.dispose();
   }
 
@@ -2696,6 +2756,8 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
       vn: _couplingState,
       tchmName: column.tchmName,
       notes: _notes.text.trim(),
+      kipExtensionMonths: _kipExtended ? 12 : 0,
+      kipExtensionOrder: _kipExtended ? _kipExtensionOrder.text.trim() : '',
       updatedAt: DateTime.now(),
       updatedBy: widget.user.displayName,
     );
@@ -2748,7 +2810,9 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
     final name = item.fullName.toLowerCase();
     if (name.isEmpty) return false;
     try {
-      final existing = await repository.watchMachinists(columnId: column.id).first;
+      final existing = await repository
+          .watchMachinists(columnId: column.id)
+          .first;
       final currentId = widget.machinist?.id ?? '';
       return existing.any(
         (other) =>
@@ -2869,6 +2933,25 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
               ),
               _dateField(_coupling, 'Сцеп', Icons.link),
               _couplingToggles(),
+              const SizedBox(height: 8),
+              _sectionTitle('Приказ по КИП'),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                secondary: const Icon(Icons.gavel_outlined),
+                title: const Text('Продлить КИП на 12 месяцев'),
+                subtitle: const Text(
+                  'Только срок КИП будет считаться на год позже',
+                ),
+                value: _kipExtended,
+                onChanged: (value) => setState(() => _kipExtended = value),
+              ),
+              if (_kipExtended)
+                _field(
+                  _kipExtensionOrder,
+                  'Приказ или распоряжение',
+                  Icons.description_outlined,
+                ),
               const SizedBox(height: 8),
               _sectionTitle('Дополнительно'),
               _field(_notes, 'Примечание', Icons.notes_outlined, maxLines: 3),
@@ -3526,6 +3609,8 @@ class SeedData {
       vn: vn.toUpperCase(),
       tchmName: tchmName,
       notes: '',
+      kipExtensionMonths: 0,
+      kipExtensionOrder: '',
       updatedAt: DateTime(2026, 6, 10, 12),
       updatedBy: 'Импорт из Excel',
     );
