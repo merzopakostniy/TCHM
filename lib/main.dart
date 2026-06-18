@@ -1,4 +1,9 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
@@ -233,7 +238,7 @@ class AppDependencies extends InheritedWidget {
   }
 }
 
-enum UserRole { viewer, instructor, tchm, operator, admin }
+enum UserRole { viewer, instructor, tchm, operator, admin, developer }
 
 extension UserRoleLabels on UserRole {
   String get title {
@@ -243,6 +248,7 @@ extension UserRoleLabels on UserRole {
       UserRole.tchm => 'ТЧМ',
       UserRole.operator => 'Оператор',
       UserRole.admin => 'Администратор',
+      UserRole.developer => 'Разработчик',
     };
   }
 
@@ -251,8 +257,11 @@ extension UserRoleLabels on UserRole {
   bool get canEditAny {
     return this == UserRole.admin ||
         this == UserRole.tchm ||
-        this == UserRole.operator;
+        this == UserRole.operator ||
+        this == UserRole.developer;
   }
+
+  bool get isDeveloper => this == UserRole.developer;
 }
 
 UserRole roleFromString(Object? value) {
@@ -264,7 +273,7 @@ UserRole roleFromString(Object? value) {
 
 const allowedTchmProfiles = <String, String>{
   '1145': 'Королев М.А.',
-  '489': 'Моисей С.В.',
+  '488': 'Мойсей С.В.',
   '462': 'Кузнецов А.Л.',
   '130': 'Булыгин В.В.',
   '1004': 'Баканов А.А.',
@@ -290,7 +299,23 @@ const allowedTchmProfiles = <String, String>{
   '1671': 'Серков Н.А.',
 };
 
+// Табельный номер разработчика. Вход под ним даёт роль «Разработчик»
+// с полными правами на изменение и редактирование всего.
+const developerPersonnelNumber = '1916';
+
+// Отдельный пароль для входа разработчика (вместо общего пароля доступа).
+const developerPassword = 'Vladislav';
+
+bool isDeveloperPersonnelNumber(String number) {
+  return number.trim() == developerPersonnelNumber;
+}
+
+bool isDeveloperPasswordValid(String value) {
+  return value.trim().toLowerCase() == developerPassword.toLowerCase();
+}
+
 String? tchmNameForPersonnelNumber(String number) {
+  if (isDeveloperPersonnelNumber(number)) return 'Разработчик';
   return allowedTchmProfiles[number.trim()];
 }
 
@@ -358,6 +383,22 @@ class ColumnGroup {
   final String instructorName;
   final String tchmName;
   final String tchmPersonnelNumber;
+
+  ColumnGroup copyWith({
+    String? title,
+    String? instructorName,
+    String? tchmName,
+    String? tchmPersonnelNumber,
+  }) {
+    return ColumnGroup(
+      id: id,
+      number: number,
+      title: title ?? this.title,
+      instructorName: instructorName ?? this.instructorName,
+      tchmName: tchmName ?? this.tchmName,
+      tchmPersonnelNumber: tchmPersonnelNumber ?? this.tchmPersonnelNumber,
+    );
+  }
 
   Map<String, Object?> toMap() {
     return {
@@ -799,7 +840,9 @@ class FirebaseAppAuth implements AppAuth {
             id: user.uid,
             email: user.email ?? '',
             displayName: tchmName,
-            role: UserRole.tchm,
+            role: isDeveloperPersonnelNumber(cleanNumber)
+                ? UserRole.developer
+                : UserRole.tchm,
             personnelNumber: cleanNumber,
           ).toMap(),
           SetOptions(merge: true),
@@ -875,7 +918,9 @@ class DemoAppAuth implements AppAuth {
       id: 'demo-tchm-$cleanNumber',
       email: '',
       displayName: tchmName,
-      role: UserRole.tchm,
+      role: isDeveloperPersonnelNumber(cleanNumber)
+          ? UserRole.developer
+          : UserRole.tchm,
       personnelNumber: cleanNumber,
     );
     _controller.add(_user);
@@ -900,6 +945,8 @@ abstract class TchmRepository {
   Future<void> saveMachinist(Machinist machinist, AppUser user);
 
   Future<void> deleteMachinist(Machinist machinist, AppUser user);
+
+  Future<void> updateColumn(ColumnGroup column, AppUser user);
 }
 
 class FirebaseTchmRepository implements TchmRepository {
@@ -1002,6 +1049,17 @@ class FirebaseTchmRepository implements TchmRepository {
     }
     await firestore.collection('machinists').doc(machinist.id).delete();
   }
+
+  @override
+  Future<void> updateColumn(ColumnGroup column, AppUser user) async {
+    if (!user.role.isDeveloper) {
+      throw StateError('Изменять колонну может только разработчик.');
+    }
+    await firestore
+        .collection('columns')
+        .doc(column.id)
+        .set(column.toMap(), SetOptions(merge: true));
+  }
 }
 
 class LocalTchmRepository implements TchmRepository {
@@ -1093,6 +1151,18 @@ class LocalTchmRepository implements TchmRepository {
       throw StateError('Нет прав на удаление из этой колонны.');
     }
     _machinists.removeWhere((value) => value.id == machinist.id);
+    _emit();
+  }
+
+  @override
+  Future<void> updateColumn(ColumnGroup column, AppUser user) async {
+    if (!user.role.isDeveloper) {
+      throw StateError('Изменять колонну может только разработчик.');
+    }
+    final index = _columns.indexWhere((value) => value.id == column.id);
+    if (index != -1) {
+      _columns[index] = column;
+    }
     _emit();
   }
 }
@@ -1221,7 +1291,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _signInAsTchm() async {
-    if (!_passwordValid()) return;
     final number = _personnelNumber.text.trim();
     if (number.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1229,10 +1298,51 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       return;
     }
+    if (isDeveloperPersonnelNumber(number)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Вход разработчика — через шестерёнку в углу.'),
+        ),
+      );
+      return;
+    }
+    if (!_passwordValid()) return;
     setState(() => _loading = true);
     final deps = AppDependencies.of(context);
     try {
       await deps.auth.signInAsTchm(number);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Не удалось войти: $error')));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _openDeveloperLogin() async {
+    if (_loading) return;
+    final password = await showDialog<String>(
+      context: context,
+      builder: (_) => const _DeveloperLoginDialog(),
+    );
+    if (password == null) return;
+    await _signInAsDeveloper(password);
+  }
+
+  Future<void> _signInAsDeveloper(String password) async {
+    if (!isDeveloperPasswordValid(password)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Неверный пароль разработчика')),
+      );
+      return;
+    }
+    setState(() => _loading = true);
+    final deps = AppDependencies.of(context);
+    try {
+      await deps.auth.signInAsTchm(developerPersonnelNumber);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -1257,223 +1367,242 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
         child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 440),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Container(
-                      width: 84,
-                      height: 84,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.12),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.25),
-                          width: 2,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.train_outlined,
-                        size: 44,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'ТЧМ',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 36,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Колонны и машинисты',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 15,
-                        color: Colors.white.withValues(alpha: 0.75),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.18),
-                            blurRadius: 24,
-                            offset: const Offset(0, 12),
+          child: Stack(
+            children: [
+              Align(
+                alignment: Alignment.topRight,
+                child: IconButton(
+                  tooltip: 'Вход разработчика',
+                  onPressed: _loading ? null : _openDeveloperLogin,
+                  icon: Icon(
+                    Icons.settings_outlined,
+                    color: Colors.white.withValues(alpha: 0.7),
+                  ),
+                ),
+              ),
+              Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 440),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          width: 84,
+                          height: 84,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.25),
+                              width: 2,
+                            ),
                           ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              if (_mode != null)
-                                IconButton(
-                                  tooltip: 'Назад',
-                                  onPressed: _loading
-                                      ? null
-                                      : () => setState(() {
-                                          _mode = null;
-                                          _password.clear();
-                                        }),
-                                  icon: const Icon(Icons.arrow_back),
-                                ),
-                              Expanded(
-                                child: Text(
-                                  switch (_mode) {
-                                    null => 'Выберите способ входа',
-                                    _LoginMode.instructor =>
-                                      'Вход для инструктора',
-                                    _LoginMode.guest => 'Вход для просмотра',
-                                  },
-                                  style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppPalette.textPrimary,
-                                  ),
-                                ),
+                          child: const Icon(
+                            Icons.train_outlined,
+                            size: 44,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'ТЧМ',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 36,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Колонны и машинисты',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: Colors.white.withValues(alpha: 0.75),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 28),
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.18),
+                                blurRadius: 24,
+                                offset: const Offset(0, 12),
                               ),
                             ],
                           ),
-                          if (_mode != null) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              _mode == _LoginMode.instructor
-                                  ? 'Введите табельный номер и пароль доступа'
-                                  : 'Введите пароль доступа',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: AppPalette.textSecondary,
-                              ),
-                            ),
-                          ],
-                          const SizedBox(height: 20),
-                          if (_mode == null) ...[
-                            FilledButton.icon(
-                              onPressed: () =>
-                                  setState(() => _mode = _LoginMode.instructor),
-                              icon: const Icon(Icons.edit_note_outlined),
-                              label: const Text('Войти как инструктор'),
-                            ),
-                            const SizedBox(height: 12),
-                            OutlinedButton.icon(
-                              onPressed: () =>
-                                  setState(() => _mode = _LoginMode.guest),
-                              icon: const Icon(Icons.visibility_outlined),
-                              label: const Text('Войти как гость'),
-                            ),
-                          ] else ...[
-                            if (_mode == _LoginMode.instructor) ...[
-                              _KeyboardTextField(
-                                controller: _personnelNumber,
-                                keyboardType: TextInputType.number,
-                                textInputAction: TextInputAction.next,
-                                decoration: const InputDecoration(
-                                  labelText: 'Табельный номер',
-                                  prefixIcon: Icon(Icons.badge_outlined),
-                                ),
-                                onChanged: (_) => setState(() {}),
-                                onSubmitted: (_) =>
-                                    _loading ? null : _signInAsTchm(),
-                              ),
-                              if (enteredNumber.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                Row(
-                                  children: [
-                                    Icon(
-                                      foundTchmName == null
-                                          ? Icons.error_outline
-                                          : Icons.check_circle_outline,
-                                      size: 18,
-                                      color: foundTchmName == null
-                                          ? Theme.of(context).colorScheme.error
-                                          : AppPalette.accent,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  if (_mode != null)
+                                    IconButton(
+                                      tooltip: 'Назад',
+                                      onPressed: _loading
+                                          ? null
+                                          : () => setState(() {
+                                              _mode = null;
+                                              _password.clear();
+                                            }),
+                                      icon: const Icon(Icons.arrow_back),
                                     ),
-                                    const SizedBox(width: 6),
-                                    Expanded(
-                                      child: Text(
-                                        foundTchmName ??
-                                            'Табельный номер не найден',
-                                        style: TextStyle(
+                                  Expanded(
+                                    child: Text(
+                                      switch (_mode) {
+                                        null => 'Выберите способ входа',
+                                        _LoginMode.instructor =>
+                                          'Вход для инструктора',
+                                        _LoginMode.guest =>
+                                          'Вход для просмотра',
+                                      },
+                                      style: const TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppPalette.textPrimary,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (_mode != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  _mode == _LoginMode.instructor
+                                      ? 'Введите табельный номер и пароль доступа'
+                                      : 'Введите пароль доступа',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: AppPalette.textSecondary,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 20),
+                              if (_mode == null) ...[
+                                FilledButton.icon(
+                                  onPressed: () => setState(
+                                    () => _mode = _LoginMode.instructor,
+                                  ),
+                                  icon: const Icon(Icons.edit_note_outlined),
+                                  label: const Text('Войти как инструктор'),
+                                ),
+                                const SizedBox(height: 12),
+                                OutlinedButton.icon(
+                                  onPressed: () =>
+                                      setState(() => _mode = _LoginMode.guest),
+                                  icon: const Icon(Icons.visibility_outlined),
+                                  label: const Text('Войти как гость'),
+                                ),
+                              ] else ...[
+                                if (_mode == _LoginMode.instructor) ...[
+                                  _KeyboardTextField(
+                                    controller: _personnelNumber,
+                                    keyboardType: TextInputType.number,
+                                    textInputAction: TextInputAction.next,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Табельный номер',
+                                      prefixIcon: Icon(Icons.badge_outlined),
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                    onSubmitted: (_) =>
+                                        _loading ? null : _signInAsTchm(),
+                                  ),
+                                  if (enteredNumber.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          foundTchmName == null
+                                              ? Icons.error_outline
+                                              : Icons.check_circle_outline,
+                                          size: 18,
                                           color: foundTchmName == null
                                               ? Theme.of(
                                                   context,
                                                 ).colorScheme.error
                                               : AppPalette.accent,
-                                          fontWeight: FontWeight.w700,
                                         ),
-                                      ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            foundTchmName ??
+                                                'Табельный номер не найден',
+                                            style: TextStyle(
+                                              color: foundTchmName == null
+                                                  ? Theme.of(
+                                                      context,
+                                                    ).colorScheme.error
+                                                  : AppPalette.accent,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ],
+                                  const SizedBox(height: 12),
+                                ],
+                                _KeyboardTextField(
+                                  controller: _password,
+                                  obscureText: true,
+                                  textInputAction: TextInputAction.done,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Пароль доступа',
+                                    prefixIcon: Icon(Icons.lock_outline),
+                                  ),
+                                  onSubmitted: (_) {
+                                    if (_loading) return;
+                                    _mode == _LoginMode.guest
+                                        ? _signInAsGuest()
+                                        : _signInAsTchm();
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+                                FilledButton.icon(
+                                  onPressed: _loading
+                                      ? null
+                                      : (_mode == _LoginMode.guest
+                                            ? _signInAsGuest
+                                            : _signInAsTchm),
+                                  icon: _loading
+                                      ? const SizedBox.square(
+                                          dimension: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : Icon(
+                                          _mode == _LoginMode.guest
+                                              ? Icons.visibility_outlined
+                                              : Icons.login,
+                                        ),
+                                  label: Text(
+                                    _mode == _LoginMode.guest
+                                        ? 'Войти как гость'
+                                        : 'Войти',
+                                  ),
                                 ),
                               ],
-                              const SizedBox(height: 12),
                             ],
-                            _KeyboardTextField(
-                              controller: _password,
-                              obscureText: true,
-                              textInputAction: TextInputAction.done,
-                              decoration: const InputDecoration(
-                                labelText: 'Пароль доступа',
-                                prefixIcon: Icon(Icons.lock_outline),
-                              ),
-                              onSubmitted: (_) {
-                                if (_loading) return;
-                                _mode == _LoginMode.guest
-                                    ? _signInAsGuest()
-                                    : _signInAsTchm();
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                            FilledButton.icon(
-                              onPressed: _loading
-                                  ? null
-                                  : (_mode == _LoginMode.guest
-                                        ? _signInAsGuest
-                                        : _signInAsTchm),
-                              icon: _loading
-                                  ? const SizedBox.square(
-                                      dimension: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white,
-                                      ),
-                                    )
-                                  : Icon(
-                                      _mode == _LoginMode.guest
-                                          ? Icons.visibility_outlined
-                                          : Icons.login,
-                                    ),
-                              label: Text(
-                                _mode == _LoginMode.guest
-                                    ? 'Войти как гость'
-                                    : 'Войти',
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -1618,6 +1747,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 12),
                   if (query.isEmpty)
                     _ColumnsPane(
+                      user: widget.user,
                       columns: columns,
                       selectedColumnId: null,
                       machinists: allMachinists,
@@ -1863,6 +1993,93 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
     );
   }
 
+  Future<void> _handleSaveAndroid(List<Machinist> machinists) async {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 16),
+              Text('Формируется PDF…'),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      final bytes = await _buildColumnPdfBytes(widget.column, machinists);
+      final dir = Directory('/storage/emulated/0/Download');
+      final fileName =
+          '${widget.column.title}_${_formatDate(DateTime.now(), fourDigitYear: false).replaceAll('.', '-')}.pdf';
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsBytes(bytes);
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Сохранено в Загрузки: $fileName')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка сохранения: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleShare(List<Machinist> machinists) async {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 16),
+              Text('Формируется PDF…'),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      final bytes = await _buildColumnPdfBytes(widget.column, machinists);
+      if (mounted) Navigator.of(context).pop();
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: '${widget.column.title}.pdf',
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка создания PDF: $e')),
+        );
+      }
+    }
+  }
+
+
   @override
   Widget build(BuildContext context) {
     final repository = AppDependencies.of(context).repository;
@@ -1958,6 +2175,28 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
                           ],
                         ),
                       ),
+                      IconButton(
+                        icon: const Icon(
+                          Icons.ios_share,
+                          color: Colors.white,
+                          size: 22,
+                        ),
+                        onPressed: () => _handleShare(allMachinists),
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      if (Platform.isAndroid)
+                        IconButton(
+                          icon: const Icon(
+                            Icons.download,
+                            color: Colors.white,
+                            size: 22,
+                          ),
+                          onPressed: () =>
+                              _handleSaveAndroid(allMachinists),
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                        ),
                     ],
                   ),
                 ),
@@ -2027,12 +2266,14 @@ class _StatusCountBadge extends StatelessWidget {
 
 class _ColumnsPane extends StatelessWidget {
   const _ColumnsPane({
+    required this.user,
     required this.columns,
     required this.selectedColumnId,
     required this.machinists,
     required this.onSelected,
   });
 
+  final AppUser user;
   final List<ColumnGroup> columns;
   final String? selectedColumnId;
   final List<Machinist> machinists;
@@ -2178,6 +2419,16 @@ class _ColumnsPane extends StatelessWidget {
                               ),
                             ),
                           ),
+                          if (user.role.isDeveloper) ...[
+                            const SizedBox(width: 4),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              tooltip: 'Изменить ТЧМ / инструктора',
+                              icon: const Icon(Icons.edit_outlined, size: 20),
+                              color: AppPalette.deep,
+                              onPressed: () => _editColumn(context, column),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -2188,6 +2439,163 @@ class _ColumnsPane extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _editColumn(BuildContext context, ColumnGroup column) async {
+    final repository = AppDependencies.of(context).repository;
+    final messenger = ScaffoldMessenger.of(context);
+    final updated = await showDialog<ColumnGroup>(
+      context: context,
+      builder: (_) => _ColumnEditorDialog(column: column),
+    );
+    if (updated == null) return;
+    try {
+      await repository.updateColumn(updated, user);
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Не удалось сохранить: $error')),
+      );
+    }
+  }
+}
+
+class _DeveloperLoginDialog extends StatefulWidget {
+  const _DeveloperLoginDialog();
+
+  @override
+  State<_DeveloperLoginDialog> createState() => _DeveloperLoginDialogState();
+}
+
+class _DeveloperLoginDialogState extends State<_DeveloperLoginDialog> {
+  late final TextEditingController _password;
+
+  @override
+  void initState() {
+    super.initState();
+    _password = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Вход разработчика'),
+      content: _KeyboardTextField(
+        controller: _password,
+        obscureText: true,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(
+          labelText: 'Пароль разработчика',
+          prefixIcon: Icon(Icons.lock_outline),
+        ),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_password.text),
+          child: const Text('Войти'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ColumnEditorDialog extends StatefulWidget {
+  const _ColumnEditorDialog({required this.column});
+
+  final ColumnGroup column;
+
+  @override
+  State<_ColumnEditorDialog> createState() => _ColumnEditorDialogState();
+}
+
+class _ColumnEditorDialogState extends State<_ColumnEditorDialog> {
+  late final TextEditingController _tchmName;
+  late final TextEditingController _tchmNumber;
+  late final TextEditingController _instructorName;
+
+  @override
+  void initState() {
+    super.initState();
+    _tchmName = TextEditingController(text: widget.column.tchmName);
+    _tchmNumber = TextEditingController(
+      text: widget.column.tchmPersonnelNumber,
+    );
+    _instructorName = TextEditingController(text: widget.column.instructorName);
+  }
+
+  @override
+  void dispose() {
+    _tchmName.dispose();
+    _tchmNumber.dispose();
+    _instructorName.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    Navigator.of(context).pop(
+      widget.column.copyWith(
+        tchmName: _tchmName.text.trim(),
+        tchmPersonnelNumber: _tchmNumber.text.trim(),
+        instructorName: _instructorName.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Колонна ${widget.column.number}'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _tchmName,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'ТЧМ (фамилия, инициалы)',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _tchmNumber,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Табельный ТЧМ',
+                prefixIcon: Icon(Icons.tag),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _instructorName,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Инструктор (фамилия, инициалы)',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('Сохранить')),
+      ],
     );
   }
 }
@@ -2545,6 +2953,146 @@ String _couplingMark(Machinist machinist) {
     machinist.coupling,
     if (machinist.vn.isNotEmpty) '(${machinist.vn})',
   ].where((part) => part.isNotEmpty).join(' ');
+}
+
+Future<Uint8List> _buildColumnPdfBytes(
+  ColumnGroup column,
+  List<Machinist> machinists,
+) async {
+  final fontRegular = await PdfGoogleFonts.notoSansRegular();
+  final fontBold = await PdfGoogleFonts.notoSansBold();
+
+  final dateStr = _formatDate(DateTime.now(), fourDigitYear: false);
+
+  pw.TextStyle bold([double size = 8]) =>
+      pw.TextStyle(font: fontBold, fontSize: size, color: PdfColors.black);
+
+  pw.TextStyle regular([double size = 8]) =>
+      pw.TextStyle(font: fontRegular, fontSize: size, color: PdfColors.black);
+
+  pw.TextStyle regularBold([double size = 8]) =>
+      pw.TextStyle(font: fontBold, fontSize: size, color: PdfColors.black);
+
+  pw.Widget hCell(String text) => pw.Container(
+    color: PdfColors.white,
+    alignment: pw.Alignment.center,
+    padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+    child: pw.Text(text, style: bold(), textAlign: pw.TextAlign.center),
+  );
+
+  pw.Widget dCell(String text, {CheckStatus? status}) => pw.Container(
+    color: PdfColors.white,
+    alignment: pw.Alignment.center,
+    padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+    child: pw.Text(
+      text,
+      style: status == CheckStatus.overdue ? regularBold() : regular(),
+      textAlign: pw.TextAlign.center,
+    ),
+  );
+
+  pw.Widget nameCell(String text) => pw.Container(
+    color: PdfColors.white,
+    alignment: pw.Alignment.centerLeft,
+    padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+    child: pw.Text(text, style: regular()),
+  );
+
+  final dataRows = <pw.TableRow>[];
+  for (int i = 0; i < machinists.length; i++) {
+    final m = machinists[i];
+    final checks = {
+      for (final r in evaluateAllChecks(m)) r.discipline: r.status,
+    };
+    final couplingText = _couplingMark(m);
+    dataRows.add(pw.TableRow(
+      children: [
+        dCell('${i + 1}'),
+        nameCell(m.fullName),
+        dCell(m.workStart.isEmpty ? '—' : m.workStart),
+        dCell(m.classRank.isEmpty ? '—' : m.classRank),
+        dCell(
+          m.kip.isEmpty ? '—' : m.kip,
+          status: checks[CheckDiscipline.kip],
+        ),
+        dCell(
+          m.atz.isEmpty ? '—' : m.atz,
+          status: checks[CheckDiscipline.atz],
+        ),
+        dCell(
+          couplingText.isEmpty ? '—' : couplingText,
+          status: checks[CheckDiscipline.coupling],
+        ),
+        dCell(
+          m.tra.isEmpty ? '—' : m.tra,
+          status: checks[CheckDiscipline.tra],
+        ),
+      ],
+    ));
+  }
+
+  final doc = pw.Document();
+  doc.addPage(
+    pw.MultiPage(
+      pageFormat: PdfPageFormat.a4.landscape,
+      margin: const pw.EdgeInsets.all(28),
+      build: (ctx) => [
+        // Шапка: дата слева, название колонны по центру
+        pw.Container(
+          padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: pw.BoxDecoration(
+            border: pw.Border.all(width: 0.5),
+          ),
+          child: pw.Row(
+            children: [
+              pw.Text(dateStr, style: bold(10)),
+              pw.SizedBox(width: 16),
+              pw.Expanded(
+                child: pw.Text(
+                  '${column.title}'
+                  '${column.tchmName.isNotEmpty ? '  ${column.tchmName}' : ''}',
+                  style: bold(12),
+                  textAlign: pw.TextAlign.center,
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Таблица
+        pw.Table(
+          border: pw.TableBorder.all(width: 0.5),
+          defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+          columnWidths: const {
+            0: pw.FixedColumnWidth(20),
+            1: pw.FlexColumnWidth(1.6),
+            2: pw.FixedColumnWidth(65),
+            3: pw.FixedColumnWidth(28),
+            4: pw.FlexColumnWidth(1.2),
+            5: pw.FlexColumnWidth(1.2),
+            6: pw.FlexColumnWidth(1.2),
+            7: pw.FlexColumnWidth(1.2),
+          },
+          children: [
+            pw.TableRow(
+              children: [
+                hCell('№'),
+                hCell('Машинисты'),
+                hCell('Начало работы'),
+                hCell('Класс'),
+                hCell('КИП'),
+                hCell('АТЗ'),
+                hCell('Сцеп'),
+                hCell('ТРА'),
+              ],
+            ),
+            ...dataRows,
+          ],
+        ),
+      ],
+    ),
+  );
+
+  return doc.save();
 }
 
 void _showKeyboard(FocusNode focusNode) {
@@ -3189,8 +3737,8 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
   }
 
   Future<DateTime?> _showAdaptiveDatePicker(DateTime initial) {
-    final first = DateTime(2000);
-    final last = DateTime(2100);
+    final first = DateTime(1900);
+    final last = DateTime(2200);
     final clampedInitial = initial.isBefore(first)
         ? first
         : (initial.isAfter(last) ? last : initial);
@@ -3292,7 +3840,7 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
 class SeedData {
   static const columnTchmNumbers = <int, String>{
     1: '1145',
-    2: '489',
+    2: '488',
     3: '462',
     4: '130',
     5: '1004',

@@ -21,7 +21,7 @@ service cloud.firestore {
     }
 
     function canEditAny() {
-      return role() in ['admin', 'tchm', 'operator'];
+      return role() in ['admin', 'tchm', 'operator', 'developer'];
     }
 
     function canEditColumn(columnId) {
@@ -36,7 +36,7 @@ service cloud.firestore {
     function allowedTchmProfile(data) {
       return
         (data.personnelNumber == '1145' && data.displayName == 'Королев М.А.') ||
-        (data.personnelNumber == '489' && data.displayName == 'Моисей С.В.') ||
+        (data.personnelNumber == '488' && data.displayName == 'Мойсей С.В.') ||
         (data.personnelNumber == '462' && data.displayName == 'Кузнецов А.Л.') ||
         (data.personnelNumber == '130' && data.displayName == 'Булыгин В.В.') ||
         (data.personnelNumber == '1004' && data.displayName == 'Баканов А.А.') ||
@@ -62,8 +62,15 @@ service cloud.firestore {
         (data.personnelNumber == '1671' && data.displayName == 'Серков Н.А.');
     }
 
+    function isDeveloperProfile(data) {
+      return data.role == 'developer' &&
+        data.personnelNumber == '1916' &&
+        data.displayName == 'Разработчик';
+    }
+
     function isSelfLoginProfile(data) {
       return data.role == 'viewer' ||
+        isDeveloperProfile(data) ||
         (
           data.role == 'tchm' &&
           hasPersonnelNumber(data) &&
