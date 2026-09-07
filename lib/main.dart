@@ -858,6 +858,14 @@ CheckStatus machinistOverallStatus(Machinist machinist, {DateTime? now}) {
 bool machinistNeedsAttention(Machinist machinist, {DateTime? now}) =>
     machinistOverallStatus(machinist, now: now) != CheckStatus.ok;
 
+/// Просрочен хотя бы один норматив.
+///
+/// Не путать с [machinistNeedsAttention]: тот верен и для «скоро истекает»,
+/// и для «нет данных». Тревога в шапке и экран по ней считают только
+/// просрочку — то, по чему машиниста уже нельзя допускать.
+bool machinistIsOverdue(Machinist machinist, {DateTime? now}) =>
+    machinistOverallStatus(machinist, now: now) == CheckStatus.overdue;
+
 Color checkStatusColor(CheckStatus status) => switch (status) {
   CheckStatus.overdue => AppPalette.danger,
   CheckStatus.soon => AppPalette.warning,
@@ -4950,7 +4958,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       .toList();
 
             final attentionTotal = allMachinists
-                .where(machinistNeedsAttention)
+                .where(machinistIsOverdue)
                 .length;
 
             return Scaffold(
@@ -5358,14 +5366,14 @@ class AttentionScreen extends StatelessWidget {
               all.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
-          final items = all.where(machinistNeedsAttention).toList()
+          final items = all.where(machinistIsOverdue).toList()
             ..sort(_compareAttention);
           if (items.isEmpty) {
             return const Center(
               child: Padding(
                 padding: EdgeInsets.all(24),
                 child: Text(
-                  'Всё в порядке — приближающихся проверок нет.',
+                  'Просроченных нормативов нет.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppPalette.textSecondary),
                 ),
