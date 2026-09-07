@@ -4443,7 +4443,7 @@ class _StatCell extends StatelessWidget {
 /// Репозиторий у него не отфильтрован, поэтому отбираем депо здесь же, на
 /// клиенте: заводить ради просмотра второй, суженный репозиторий значило бы
 /// поднимать вторую подписку на те же документы.
-class DepotColumnsScreen extends StatelessWidget {
+class DepotColumnsScreen extends StatefulWidget {
   const DepotColumnsScreen({
     super.key,
     required this.user,
@@ -4459,7 +4459,24 @@ class DepotColumnsScreen extends StatelessWidget {
 
   final String title;
 
+  @override
+  State<DepotColumnsScreen> createState() => _DepotColumnsScreenState();
+}
+
+class _DepotColumnsScreenState extends State<DepotColumnsScreen> {
+  /// Поиск по фамилии. Админ и разработчик приходят на этот экран, а не на
+  /// HomeScreen, и до сих пор оставались без поиска вовсе — а колонн у них
+  /// больше, чем у ТЧМ: они видят депо целиком.
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
   bool _mine(String? id) {
+    final depotId = widget.depotId;
     if (depotId != null) return id == depotId;
     return id == null || !MoscowDepots.all.any((depot) => depot.id == id);
   }
@@ -4470,7 +4487,7 @@ class DepotColumnsScreen extends StatelessWidget {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(title),
+          title: Text(widget.title),
           bottom: const TabBar(
             indicatorColor: Colors.white,
             labelColor: Colors.white,
@@ -4520,6 +4537,14 @@ class DepotColumnsScreen extends StatelessWidget {
             if (columns.isEmpty) {
               return _DepotColumnsEmpty(machinists: machinists.length);
             }
+            final query = _search.text.trim().toLowerCase();
+            final found = query.isEmpty
+                ? const <Machinist>[]
+                : machinists
+                      .where(
+                        (item) => item.fullName.toLowerCase().contains(query),
+                      )
+                      .toList();
             return RefreshIndicator(
               color: DepotBrand.redInk,
               onRefresh: () async {
@@ -4528,26 +4553,69 @@ class DepotColumnsScreen extends StatelessWidget {
                 }
               },
               child: ListView(
-              padding: const EdgeInsets.all(12),
-              children: [
-                _ColumnsPane(
-                  user: user,
-                  columns: columns,
-                  selectedColumnId: null,
-                  machinists: machinists,
-                  onSelected: (id) {
-                    final column = columns.firstWhere((item) => item.id == id);
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => ColumnDetailScreen(
-                          user: user,
-                          column: column,
+                padding: const EdgeInsets.all(12),
+                children: [
+                  _KeyboardTextField(
+                    controller: _search,
+                    textInputAction: TextInputAction.search,
+                    onChanged: (_) => setState(() {}),
+                    decoration: searchInputDecoration(
+                      hint: 'Поиск по фамилии',
+                      suffixIcon: query.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Очистить',
+                              icon: const Icon(Icons.close),
+                              onPressed: () {
+                                _search.clear();
+                                setState(() {});
+                              },
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (query.isEmpty)
+                    _ColumnsPane(
+                      user: widget.user,
+                      columns: columns,
+                      selectedColumnId: null,
+                      machinists: machinists,
+                      onSelected: (id) {
+                        final column = columns.firstWhere(
+                          (item) => item.id == id,
+                        );
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ColumnDetailScreen(
+                              user: widget.user,
+                              column: column,
+                              columns: columns,
+                            ),
+                          ),
+                        );
+                      },
+                    )
+                  else if (found.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 48),
+                      child: Center(
+                        child: Text(
+                          'Никого не нашлось',
+                          style: TextStyle(color: AppPalette.textSecondary),
+                        ),
+                      ),
+                    )
+                  else
+                    ...found.map(
+                      (machinist) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: MachinistCard(
+                          user: widget.user,
+                          machinist: machinist,
                           columns: columns,
                         ),
                       ),
-                    );
-                  },
-                  ),
+                    ),
                 ],
               ),
             );
@@ -4589,7 +4657,7 @@ class DepotColumnsScreen extends StatelessWidget {
             return _AccountTile(
               account: accounts[index],
               all: accounts,
-              by: user,
+              by: widget.user,
             );
           },
         );
