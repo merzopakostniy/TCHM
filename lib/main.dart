@@ -2089,6 +2089,31 @@ ButtonStyle depotPrimaryButtonStyle() => FilledButton.styleFrom(
   disabledForegroundColor: Colors.white70,
 );
 
+/// Оформление строки поиска.
+///
+/// Скругление берётся от карточки колонны, [kColumnCardRadius]: поле лежит
+/// вплотную над списком, и своя величина читалась бы как небрежность.
+/// Общая тема полей оставлена как есть — в формах редактора скругление
+/// такого размера смотрится тяжело.
+InputDecoration searchInputDecoration({
+  required String hint,
+  Widget? suffixIcon,
+}) {
+  OutlineInputBorder border(Color color, double width) => OutlineInputBorder(
+    borderRadius: BorderRadius.circular(kColumnCardRadius),
+    borderSide: BorderSide(color: color, width: width),
+  );
+  return InputDecoration(
+    isDense: true,
+    hintText: hint,
+    prefixIcon: const Icon(Icons.search),
+    suffixIcon: suffixIcon,
+    border: border(AppPalette.border, 1),
+    enabledBorder: border(AppPalette.border, 1),
+    focusedBorder: border(AppPalette.accent, 2),
+  );
+}
+
 /// Кнопка в `actions` диалога.
 ///
 /// От экранной отличается только шириной. Общая тема задаёт кнопкам
@@ -5012,10 +5037,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     controller: _search,
                     textInputAction: TextInputAction.search,
                     onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      hintText: 'Поиск по фамилии',
-                      prefixIcon: const Icon(Icons.search),
+                    decoration: searchInputDecoration(
+                      hint: 'Поиск по фамилии',
                       suffixIcon: query.isEmpty
                           ? null
                           : IconButton(
@@ -6159,10 +6182,8 @@ class _MachinistsPane extends StatelessWidget {
           controller: search,
           textInputAction: TextInputAction.search,
           onChanged: (_) => onSearchChanged(),
-          decoration: InputDecoration(
-            isDense: true,
-            hintText: 'Поиск по фамилии',
-            prefixIcon: const Icon(Icons.search),
+          decoration: searchInputDecoration(
+            hint: 'Поиск по фамилии',
             suffixIcon: search.text.trim().isEmpty
                 ? null
                 : IconButton(
