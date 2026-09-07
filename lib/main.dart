@@ -188,6 +188,29 @@ ThemeData buildAppTheme() {
         side: BorderSide(color: AppPalette.border),
       ),
     ),
+    // Без своей темы Material 3 подмешивает в подложку диалога тон зерна.
+    // Зерно у нас красное, поэтому окно получалось розовым и выпадало из
+    // интерфейса, где всё остальное нейтральное. Форма — как у карточек:
+    // скругление и та же граница, чтобы окно читалось частью приложения.
+    dialogTheme: DialogThemeData(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: const BorderSide(color: AppPalette.border),
+      ),
+      titleTextStyle: const TextStyle(
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
+        color: AppPalette.textPrimary,
+      ),
+      contentTextStyle: const TextStyle(
+        fontSize: 14,
+        height: 1.4,
+        color: AppPalette.textPrimary,
+      ),
+    ),
     inputDecorationTheme: InputDecorationTheme(
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
@@ -2066,6 +2089,21 @@ ButtonStyle depotPrimaryButtonStyle() => FilledButton.styleFrom(
   disabledForegroundColor: Colors.white70,
 );
 
+/// Кнопка в `actions` диалога.
+///
+/// От экранной отличается только шириной. Общая тема задаёт кнопкам
+/// `minimumSize: Size.fromHeight(52)`, а это ширина «бесконечность»: в
+/// диалоге кнопка распирается на всю строку и выдавливает «Отмену» на
+/// строку выше. Здесь ширина по содержимому.
+ButtonStyle dialogActionStyle({Color background = DepotBrand.redInk}) =>
+    FilledButton.styleFrom(
+      backgroundColor: background,
+      foregroundColor: Colors.white,
+      disabledBackgroundColor: background.withValues(alpha: 0.45),
+      disabledForegroundColor: Colors.white70,
+      minimumSize: const Size(96, 44),
+    );
+
 /// Единый знак ТЧМ для всех депо: маршрут, сходящийся в одной точке.
 class _AppMark extends StatelessWidget {
   const _AppMark({this.size = 150});
@@ -3380,6 +3418,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
             actions: [
               FilledButton(
+                style: dialogActionStyle(),
                 onPressed: () => Navigator.of(context).pop(),
                 child: const Text('Понятно'),
               ),
@@ -3821,9 +3860,13 @@ class _CreateColumnDialogState extends State<_CreateColumnDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Новая колонна'),
+      // Одно поле без пояснений: подсказка не помогала его заполнить, а то,
+      // что колонна достаётся создателю, видно сразу после — она появляется
+      // в списке с его фамилией.
+      // Column нужен даже с одним ребёнком: без mainAxisSize.min поле
+      // растягивается на всю доступную высоту и окно занимает весь экран.
       content: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _KeyboardTextField(
             controller: _number,
@@ -3834,16 +3877,23 @@ class _CreateColumnDialogState extends State<_CreateColumnDialog> {
             decoration: InputDecoration(
               labelText: 'Номер колонны',
               errorText: _error,
-              prefixIcon: const Icon(Icons.tag),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'ТЧМ колонны — вы. Подпись подставится из вашего профиля.',
-            style: const TextStyle(
-              fontSize: 12.5,
-              height: 1.35,
-              color: AppPalette.textSecondary,
+              // Не иконка: «№» в наборе Material отсутствует, а решётка —
+              // чужой знак, у нас номер колонны везде пишется через «№».
+              // Center с widthFactor не даёт префиксу растянуться на поле.
+              prefixIcon: const Center(
+                widthFactor: 1,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 14),
+                  child: Text(
+                    '№',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: AppPalette.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ],
@@ -3854,7 +3904,7 @@ class _CreateColumnDialogState extends State<_CreateColumnDialog> {
           child: const Text('Отмена'),
         ),
         FilledButton(
-          style: depotPrimaryButtonStyle(),
+          style: dialogActionStyle(),
           onPressed: _canSubmit ? _submit : null,
           child: const Text('Создать'),
         ),
@@ -4566,9 +4616,9 @@ class _AccountTile extends StatelessWidget {
             child: const Text('Отмена'),
           ),
           FilledButton(
-            style: closing
-                ? FilledButton.styleFrom(backgroundColor: AppPalette.danger)
-                : null,
+            style: dialogActionStyle(
+              background: closing ? AppPalette.danger : DepotBrand.redInk,
+            ),
             onPressed: () => Navigator.of(context).pop(true),
             child: Text(closing ? 'Закрыть' : 'Открыть'),
           ),
@@ -4624,9 +4674,7 @@ class _AccountTile extends StatelessWidget {
             child: const Text('Отмена'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: AppPalette.danger,
-            ),
+            style: dialogActionStyle(background: AppPalette.danger),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Удалить'),
           ),
@@ -5931,6 +5979,7 @@ class _ColumnsPane extends StatelessWidget {
             child: const Text('Отмена'),
           ),
           FilledButton(
+            style: dialogActionStyle(background: AppPalette.danger),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Удалить'),
           ),
@@ -7305,6 +7354,7 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
               child: const Text('Отмена'),
             ),
             FilledButton(
+              style: dialogActionStyle(),
               onPressed: () => Navigator.of(context).pop(true),
               child: const Text('Сохранить'),
             ),
@@ -7367,6 +7417,7 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
             child: const Text('Отмена'),
           ),
           FilledButton(
+            style: dialogActionStyle(background: AppPalette.danger),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Удалить'),
           ),
