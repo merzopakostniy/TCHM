@@ -405,9 +405,15 @@ class ApiTchmRepository implements TchmRepository {
     required int number,
     required AppUser user,
   }) async {
+    // ТЧМ новой колонны — тот, кто её завёл. Сервер берёт имя строго из
+    // тела запроса, поэтому без этих двух полей колонна создавалась с
+    // пустым ТЧМ и её приходилось сразу править руками. У Firebase и у
+    // демо-репозитория подстановка была, при переезде на API потерялась.
     await api.post('/columns', {
       'number': number,
       'depotId': depotId ?? user.depotId,
+      'tchmName': user.displayName,
+      'tchmPersonnelNumber': user.personnelNumber ?? '',
     });
     await refresh();
   }
