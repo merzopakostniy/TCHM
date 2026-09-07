@@ -5506,39 +5506,39 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
         return Scaffold(
           appBar: AppBar(
             title: Text(widget.column.title),
+            // Выгрузка живёт в шапке. Раньше под ней лежала красная плашка,
+            // повторявшая номер и название колонны из этой же шапки, и
+            // держала она ровно эти две кнопки. Счётчик машинистов оттуда
+            // убран: он и так виден по самому списку.
+            //
+            // Гостю кнопок не показываем: «только просмотр» не должно
+            // означать «просмотр и вынести колонну наружу одним файлом».
             actions: [
-              _AppBarPill(
-                icon: Icons.engineering_outlined,
-                text: '${allMachinists.length} маш.',
-              ),
+              if (widget.user.role.canExportData) ...[
+                IconButton(
+                  tooltip: 'Поделиться PDF',
+                  onPressed: () => _handleShare(allMachinists),
+                  icon: const Icon(Icons.ios_share),
+                ),
+                if (Platform.isAndroid)
+                  IconButton(
+                    tooltip: 'Сохранить PDF',
+                    onPressed: () => _handleSaveAndroid(allMachinists),
+                    icon: const Icon(Icons.download_rounded),
+                  ),
+              ],
               const SizedBox(width: 4),
             ],
           ),
           body: Padding(
             padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _ColumnActionBar(
-                  column: widget.column,
-                  canExport: widget.user.role.canExportData,
-                  onShare: () => _handleShare(allMachinists),
-                  onSave: Platform.isAndroid
-                      ? () => _handleSaveAndroid(allMachinists)
-                      : null,
-                ),
-                const SizedBox(height: 12),
-                Expanded(
-                  child: _MachinistsPane(
-                    user: widget.user,
-                    columns: widget.columns,
-                    selectedColumn: widget.column,
-                    machinists: machinists,
-                    search: _search,
-                    onSearchChanged: () => setState(() {}),
-                  ),
-                ),
-              ],
+            child: _MachinistsPane(
+              user: widget.user,
+              columns: widget.columns,
+              selectedColumn: widget.column,
+              machinists: machinists,
+              search: _search,
+              onSearchChanged: () => setState(() {}),
             ),
           ),
           floatingActionButton: widget.user.canAddToColumn(widget.column.id)
@@ -5553,129 +5553,6 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
               : null,
         );
       },
-    );
-  }
-}
-
-/// Компактная плашка колонны: номер, название и выгрузка в PDF.
-///
-/// ТЧМ и инструктор здесь не повторяются — они уже видны в списке колонн,
-/// а плашка нужна прежде всего ради кнопок выгрузки.
-///
-/// Гостю кнопок не показываем: «только просмотр» не должно означать
-/// «просмотр и вынести колонну наружу одним файлом».
-class _ColumnActionBar extends StatelessWidget {
-  const _ColumnActionBar({
-    required this.column,
-    required this.canExport,
-    required this.onShare,
-    this.onSave,
-  });
-
-  final ColumnGroup column;
-  final bool canExport;
-  final VoidCallback onShare;
-  final VoidCallback? onSave;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-      decoration: BoxDecoration(
-        color: DepotBrand.redInk,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: DepotBrand.redInk.withValues(alpha: 0.22),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
-            ),
-            child: Text(
-              '${column.number}',
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: Colors.white,
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              column.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 16.5,
-                fontWeight: FontWeight.w800,
-                color: Colors.white,
-              ),
-            ),
-          ),
-          if (canExport) ...[
-            _PdfAction(
-              icon: Icons.ios_share,
-              tooltip: 'Поделиться PDF',
-              onPressed: onShare,
-            ),
-            if (onSave != null) ...[
-              const SizedBox(width: 6),
-              _PdfAction(
-                icon: Icons.download_rounded,
-                tooltip: 'Сохранить PDF',
-                onPressed: onSave!,
-              ),
-            ],
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-/// Кнопка выгрузки на красной плашке: своя подложка, чтобы читалась
-/// как кнопка, а не как значок на фоне.
-class _PdfAction extends StatelessWidget {
-  const _PdfAction({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: Colors.white.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(11),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(11),
-          onTap: onPressed,
-          child: SizedBox(
-            width: 40,
-            height: 40,
-            child: Center(child: Icon(icon, size: 19, color: Colors.white)),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -7114,43 +6991,6 @@ class _KeyboardTextFormFieldState extends State<_KeyboardTextFormField> {
       decoration: widget.decoration,
       validator: widget.validator,
       onTap: () => _showKeyboard(_focusNode),
-    );
-  }
-}
-
-class _AppBarPill extends StatelessWidget {
-  const _AppBarPill({required this.icon, required this.text});
-
-  final IconData icon;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 16, color: Colors.white),
-            const SizedBox(width: 6),
-            Text(
-              text,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
