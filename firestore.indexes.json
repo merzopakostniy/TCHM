@@ -1,4 +1,13 @@
 {
-  "indexes": [],
+  "indexes": [
+    {
+      "collectionGroup": "machinists",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "depotId", "order": "ASCENDING" },
+        { "fieldPath": "columnId", "order": "ASCENDING" }
+      ]
+    }
+  ],
   "fieldOverrides": []
 }

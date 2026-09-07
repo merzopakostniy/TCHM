@@ -10,18 +10,95 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
+    function hasProfile() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function role() {
-      return signedIn() && userDoc().data.role is string
+      return hasProfile() && userDoc().data.role is string
         ? userDoc().data.role
         : 'viewer';
+    }
+
+    function isDeveloperUser() {
+      return role() == 'developer';
+    }
+
+    function isManagementUser() {
+      return role() in ['admin', 'developer'];
+    }
+
+    // Старые профили без статуса или депо не дают доступа. Пользователи
+    // регистрируются заново через Yandex API, включая прежние привилегированные роли.
+    function activeProfile() {
+      return hasProfile() && userDoc().data.get('status', null) == 'active' &&
+        userDoc().data.get('depotId', null) is string &&
+        userDoc().data.depotId.size() > 0;
+    }
+
+    function safeStatusChange(userId) {
+      return isManagementUser() && activeProfile() &&
+        request.auth.uid != userId &&
+        (isDeveloperUser() || resource.data.role != 'developer') &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+        request.resource.data.status in ['active', 'disabled'];
+    }
+
+    // ---- Режим обслуживания -------------------------------------------
+    // Флаг лежит в config/app и переключается кнопкой из аккаунта
+    // разработчика. Отсутствие документа = обычный режим, поэтому правила
+    // можно деплоить до того, как флаг создан.
+    function lockDoc() {
+      return get(/databases/$(database)/documents/config/app).data;
+    }
+
+    function lockExists() {
+      return exists(/databases/$(database)/documents/config/app);
+    }
+
+    // Только просмотр: данные видны, изменения не сохраняются.
+    function writesBlocked() {
+      return lockExists() && lockDoc().writesBlocked == true;
+    }
+
+    // Полная блокировка: приложение не открывается ни у кого, кроме
+    // разработчика — иначе снять блокировку из приложения будет нечем.
+    function readsBlocked() {
+      return lockExists() && lockDoc().readsBlocked == true;
+    }
+
+    function lockActive() {
+      return writesBlocked() || readsBlocked();
+    }
+
+    function canRead() {
+      return activeProfile() && (!readsBlocked() || isDeveloperUser());
+    }
+
+    function canWriteData() {
+      return activeProfile() && !writesBlocked() && !readsBlocked();
     }
 
     function assignedColumnId() {
       return signedIn() ? userDoc().data.assignedColumnId : null;
     }
 
+    // ---- Изоляция депо ------------------------------------------------
+    // Депо вошедшего человека. Разработчик работает поверх всех депо,
+    // поэтому для него проверка снимается — иначе он не сможет ни завести
+    // новое депо, ни разобрать чужую поломку.
+    function userDepot() {
+      return hasProfile() ? userDoc().data.get('depotId', null) : null;
+    }
+
+    function sameDepot(data) {
+      return isManagementUser() ||
+        (data.depotId is string && data.depotId == userDepot());
+    }
+
     function canEditAny() {
-      return role() in ['admin', 'tchm', 'operator', 'developer'];
+      return activeProfile() && role() in ['admin', 'tchm', 'operator', 'developer'];
     }
 
     function canEditColumn(columnId) {
@@ -29,83 +106,68 @@ service cloud.firestore {
         (role() == 'instructor' && assignedColumnId() == columnId);
     }
 
-    function hasPersonnelNumber(data) {
-      return data.personnelNumber is string && data.personnelNumber.size() > 0;
-    }
+    // Регистрация и назначение ролей перенесены на сервер Yandex Cloud.
+    // Ни один клиент Firebase не может создать профиль или изменить его
+    // роль, депо, табельный номер либо привязку к колонне. Для старых
+    // профилей такие изменения доступны только доверенному Admin SDK.
 
-    function allowedTchmProfile(data) {
-      return
-        (data.personnelNumber == '1145' && data.displayName == 'Королев М.А.') ||
-        (data.personnelNumber == '488' && data.displayName == 'Мойсей С.В.') ||
-        (data.personnelNumber == '462' && data.displayName == 'Кузнецов А.Л.') ||
-        (data.personnelNumber == '130' && data.displayName == 'Булыгин В.В.') ||
-        (data.personnelNumber == '1004' && data.displayName == 'Баканов А.А.') ||
-        (data.personnelNumber == '384' && data.displayName == 'Гаврик С.А.') ||
-        (data.personnelNumber == '502' && data.displayName == 'Павлов М.А.') ||
-        (data.personnelNumber == '322' && data.displayName == 'Никифоров А.В.') ||
-        (data.personnelNumber == '392' && data.displayName == 'Двойцын Н.С.') ||
-        (data.personnelNumber == '628' && data.displayName == 'Симонов С.В.') ||
-        (data.personnelNumber == '342' && data.displayName == 'Акиньшин П.В.') ||
-        (data.personnelNumber == '169' && data.displayName == 'Рынкис А.В.') ||
-        (data.personnelNumber == '1134' && data.displayName == 'Попов Д.П.') ||
-        (data.personnelNumber == '1005' && data.displayName == 'Лихачев А.Е.') ||
-        (data.personnelNumber == '532' && data.displayName == 'Савинкин А.В.') ||
-        (data.personnelNumber == '344' && data.displayName == 'Алексеев А.В.') ||
-        (data.personnelNumber == '1576' && data.displayName == 'Логинов Д.Н.') ||
-        (data.personnelNumber == '150' && data.displayName == 'Зудин И.В.') ||
-        (data.personnelNumber == '742' && data.displayName == 'Федосков А.И.') ||
-        (data.personnelNumber == '1040' && data.displayName == 'Нарядчиков К.А.') ||
-        (data.personnelNumber == '2680' && data.displayName == 'Агапитов В.А.') ||
-        (data.personnelNumber == '1984' && data.displayName == 'Покрышкин А.Н.') ||
-        (data.personnelNumber == '966' && data.displayName == 'Архипов А.С.') ||
-        (data.personnelNumber == '941' && data.displayName == 'Серяпин С.И.') ||
-        (data.personnelNumber == '1671' && data.displayName == 'Серков Н.А.');
-    }
-
-    function isDeveloperProfile(data) {
-      return data.role == 'developer' &&
-        data.personnelNumber == '1916' &&
-        data.displayName == 'Разработчик';
-    }
-
-    function isSelfLoginProfile(data) {
-      return data.role == 'viewer' ||
-        isDeveloperProfile(data) ||
-        (
-          data.role == 'tchm' &&
-          hasPersonnelNumber(data) &&
-          allowedTchmProfile(data)
-        );
+    match /config/app {
+      allow read: if true;
+      allow write: if activeProfile() && isDeveloperUser();
     }
 
     match /users/{userId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.auth.uid == userId
-        && isSelfLoginProfile(request.resource.data);
-      allow update: if signedIn() && (
-        canEditAny() ||
-        (
-          request.auth.uid == userId &&
-          isSelfLoginProfile(request.resource.data)
-        )
+      allow read: if canRead() || (signedIn() && request.auth.uid == userId);
+      allow create: if false;
+      allow update: if canWriteData() && (
+        safeStatusChange(userId) ||
+        (request.auth.uid == userId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName']))
       );
-      allow delete: if canEditAny();
+      allow delete: if canWriteData() && isManagementUser()
+        && request.auth.uid != userId
+        && (isDeveloperUser() || resource.data.role != 'developer');
     }
 
+    // Старый реестр больше не используется для клиентской выдачи ролей.
+    match /roster/{entryId} {
+      allow read: if canRead() && sameDepot(resource.data);
+      allow write: if false;
+    }
+
+    // Запрос без фильтра по своему депо сервер отклонит целиком: правило
+    // требует совпадения depotId, а Firestore пропускает только те выборки,
+    // про которые может доказать, что чужого в них не будет.
     match /columns/{columnId} {
-      allow read: if signedIn();
-      allow create, update, delete: if canEditAny();
+      // resource == null — это чтение документа, которого ещё нет. Так
+      // приложение проверяет, свободен ли номер колонны, перед созданием;
+      // без этой ветки правило падает на resource.data с Null value error.
+      allow read: if canRead() && (resource == null || sameDepot(resource.data));
+      allow create: if canEditAny() && canWriteData()
+        && sameDepot(request.resource.data);
+      allow update: if canEditAny() && canWriteData()
+        && sameDepot(resource.data) && sameDepot(request.resource.data)
+        && request.resource.data.depotId == resource.data.depotId;
+      allow delete: if canEditAny() && canWriteData()
+        && sameDepot(resource.data);
     }
 
     match /machinists/{machinistId} {
-      allow read: if signedIn();
-      allow create: if signedIn()
+      allow read: if canRead() && (resource == null || sameDepot(resource.data));
+      allow create: if canWriteData()
+        && sameDepot(request.resource.data)
         && canEditColumn(request.resource.data.columnId)
         && request.resource.data.columnId is string;
-      allow update: if signedIn()
+      allow update: if canWriteData()
+        && sameDepot(resource.data)
+        && sameDepot(request.resource.data)
         && canEditColumn(resource.data.columnId)
-        && request.resource.data.columnId == resource.data.columnId;
-      allow delete: if signedIn() && canEditColumn(resource.data.columnId);
+        && request.resource.data.columnId == resource.data.columnId
+        // Депо менять нельзя даже своему: иначе запись уедет в чужое депо.
+        && request.resource.data.depotId == resource.data.depotId;
+      allow delete: if canWriteData()
+        && sameDepot(resource.data)
+        && canEditColumn(resource.data.columnId);
     }
   }
 }

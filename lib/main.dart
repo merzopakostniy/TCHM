@@ -7,41 +7,65 @@ import 'package:printing/printing.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 
-import 'firebase_options.dart';
+import 'api.dart';
+import 'column_actions.dart';
+import 'api_backend.dart';
+import 'depots.dart';
+import 'legal.dart';
+import 'runtime_config.dart';
+import 'invite_codes.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final firebaseReady = AppFirebaseOptions.isConfigured;
-  if (firebaseReady) {
-    await Firebase.initializeApp(options: AppFirebaseOptions.currentPlatform);
-  }
-  runApp(TchmApp(firebaseReady: firebaseReady));
+  runApp(const TchmApp());
 }
 
-class TchmApp extends StatelessWidget {
-  const TchmApp({super.key, required this.firebaseReady});
+class TchmApp extends StatefulWidget {
+  const TchmApp({super.key});
 
-  final bool firebaseReady;
+  /// Рабочие сборки всегда используют Yandex API; демо возможно только в debug.
+  static const useYandexApi = !RuntimeConfig.demo;
+
+  @override
+  State<TchmApp> createState() => _TchmAppState();
+}
+
+class _TchmAppState extends State<TchmApp> {
+  /// Репозиторий и вход создаются один раз за запуск, а не в `build`.
+  ///
+  /// У Firebase это было неважно: данные шли потоком из базы, и новый
+  /// объект подхватывал их сам. Репозиторий нового API держит загруженные
+  /// списки в себе, и пересоздание обнуляло их — экран становился пустым на
+  /// ровном месте, стоило приложению перерисоваться.
+  late final ApiClient _api = ApiClient();
+  late final TchmRepository _repository = _createRepository();
+  late final AppAuth _auth = _createAuth();
+
+  TchmRepository _createRepository() {
+    if (TchmApp.useYandexApi) return ApiTchmRepository(_api);
+    return LocalTchmRepository();
+  }
+
+  AppAuth _createAuth() {
+    if (TchmApp.useYandexApi) return ApiAppAuth(_api);
+    return DemoAppAuth();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final repository = (firebaseReady && _shotScreen < 0)
-        ? FirebaseTchmRepository(FirebaseFirestore.instance)
-        : LocalTchmRepository();
-    final auth = firebaseReady
-        ? FirebaseAppAuth(FirebaseFirestore.instance)
-        : DemoAppAuth();
+    final repository = _repository;
+    final auth = _auth;
 
     return AppDependencies(
       repository: repository,
       auth: auth,
-      firebaseReady: firebaseReady,
+      firebaseReady: false,
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'ТЧМ',
@@ -82,22 +106,46 @@ class AppScrollBehavior extends MaterialScrollBehavior {
   }
 }
 
-/// Фирменная палитра. Все цвета приложения берутся отсюда,
-/// чтобы интерфейс выглядел одинаково на iOS и Android.
+/// Палитра интерфейса. Строится вокруг одного правила: база нейтральная,
+/// цвет несёт смысл. Красный — фирменный, из [DepotBrand], и означает
+/// «главное действие или принадлежность депо». Всё остальное — оттенки
+/// серого, поэтому акцент виден и не спорит сам с собой.
+///
+/// Раньше база была синей, а акценты красными: два несвязанных цвета
+/// делили экран, и интерфейс распадался на куски.
 abstract final class AppPalette {
-  static const seed = Color(0xFF1B5FA8);
-  static const deep = Color(0xFF0C2C57);
-  static const deepLight = Color(0xFF14467F);
-  static const accent = Color(0xFF2F6FBF);
-  static const surfaceTint = Color(0xFFEAF1FB);
-  static const background = Color(0xFFF4F7FC);
-  static const border = Color(0xFFDCE5F1);
-  static const textPrimary = Color(0xFF142133);
-  static const textSecondary = Color(0xFF59667A);
-  static const danger = Color(0xFFD64545);
-  static const dangerTint = Color(0xFFFBE9E9);
-  static const warning = Color(0xFFC9781A);
-  static const warningTint = Color(0xFFFBEFDB);
+  /// Зерно цветовой схемы Material — фирменный красный.
+  static const seed = DepotBrand.redInk;
+
+  /// Тёмный графит: тексты кнопок, всплывающие сообщения, подписи отметок.
+  /// Раньше здесь был тёмно-синий, тянувший интерфейс в холод.
+  static const deep = Color(0xFF23262B);
+  static const deepLight = Color(0xFF3A3F45);
+
+  /// Акцент ввода — тот же фирменный красный, что у кнопок.
+  static const accent = DepotBrand.redInk;
+
+  static const surfaceTint = Color(0xFFF1F0EE);
+  static const background = Color(0xFFF5F4F2);
+  static const border = Color(0xFFE4E2DE);
+  static const textPrimary = Color(0xFF1B1D20);
+  static const textSecondary = Color(0xFF6C7075);
+
+  /// Статусы. Красный тревоги ярче фирменного: он должен выделяться
+  /// на фоне красной шапки, а не сливаться с ней.
+  static const danger = Color(0xFFC0272D);
+  static const dangerTint = Color(0xFFFBE8E8);
+  static const warning = Color(0xFF9A6410);
+  static const warningTint = Color(0xFFFAEFDC);
+}
+
+/// Пиктограммы отметок подбираются по смыслу, а не по названию поля.
+abstract final class MachinistIcons {
+  static const classRank = Icons.star_outline;
+  static const kip = Icons.fact_check_outlined;
+  static const tra = Icons.article_outlined;
+  static const atz = Icons.health_and_safety_outlined;
+  static const coupling = Icons.merge_type;
 }
 
 ThemeData buildAppTheme() {
@@ -117,11 +165,14 @@ ThemeData buildAppTheme() {
       },
     ),
     appBarTheme: const AppBarTheme(
-      backgroundColor: AppPalette.deep,
+      backgroundColor: DepotBrand.redInk,
       foregroundColor: Colors.white,
       centerTitle: false,
       elevation: 0,
       scrolledUnderElevation: 0,
+      // На тёмной шапке значки статус-бара должны быть светлыми,
+      // иначе на красном их не видно.
+      systemOverlayStyle: SystemUiOverlayStyle.light,
       titleTextStyle: TextStyle(
         fontSize: 18,
         fontWeight: FontWeight.w800,
@@ -177,7 +228,7 @@ ThemeData buildAppTheme() {
       style: TextButton.styleFrom(foregroundColor: AppPalette.deep),
     ),
     floatingActionButtonTheme: const FloatingActionButtonThemeData(
-      backgroundColor: AppPalette.deep,
+      backgroundColor: DepotBrand.redInk,
       foregroundColor: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.all(Radius.circular(16)),
@@ -240,6 +291,17 @@ class AppDependencies extends InheritedWidget {
 
 enum UserRole { viewer, instructor, tchm, operator, admin, developer }
 
+/// Состояние учётной записи. До подтверждения почты и до одобрения
+/// руководителем человек внутрь не попадает — видит экран ожидания.
+enum AccountStatus { pending, active, disabled }
+
+AccountStatus statusFromString(Object? value) {
+  return AccountStatus.values.firstWhere(
+    (status) => status.name == value,
+    orElse: () => AccountStatus.active,
+  );
+}
+
 extension UserRoleLabels on UserRole {
   String get title {
     return switch (this) {
@@ -262,6 +324,17 @@ extension UserRoleLabels on UserRole {
   }
 
   bool get isDeveloper => this == UserRole.developer;
+
+  bool get canManageAllDepots => this == UserRole.admin || isDeveloper;
+
+  bool get canManageAccounts => canManageAllDepots;
+
+  bool get canManageDatabaseLock => isDeveloper;
+
+  /// Право вынести данные из приложения: PDF колонны. Гостю закрыто —
+  /// он смотрит, а не забирает. Инструктору оставлено: он ведёт свою
+  /// колонну, и печатная форма ему нужна в работе.
+  bool get canExportData => this != UserRole.viewer;
 }
 
 UserRole roleFromString(Object? value) {
@@ -271,6 +344,9 @@ UserRole roleFromString(Object? value) {
   );
 }
 
+// Уволившиеся из списка убираются: справочник подставляет ФИО ТЧМ и
+// попадает в реестр, а реестр при регистрации главнее выбора роли.
+// Агапитов В.А. (таб. 2680) убран 01.09.2026 — больше не работает.
 const allowedTchmProfiles = <String, String>{
   '1145': 'Королев М.А.',
   '488': 'Мойсей С.В.',
@@ -292,26 +368,19 @@ const allowedTchmProfiles = <String, String>{
   '150': 'Зудин И.В.',
   '742': 'Федосков А.И.',
   '1040': 'Нарядчиков К.А.',
-  '2680': 'Агапитов В.А.',
   '1984': 'Покрышкин А.Н.',
   '966': 'Архипов А.С.',
   '941': 'Серяпин С.И.',
   '1671': 'Серков Н.А.',
+  '505': 'Пауткин В.А.',
 };
 
 // Табельный номер разработчика. Вход под ним даёт роль «Разработчик»
 // с полными правами на изменение и редактирование всего.
 const developerPersonnelNumber = '1916';
 
-// Отдельный пароль для входа разработчика (вместо общего пароля доступа).
-const developerPassword = 'Vladislav';
-
 bool isDeveloperPersonnelNumber(String number) {
   return number.trim() == developerPersonnelNumber;
-}
-
-bool isDeveloperPasswordValid(String value) {
-  return value.trim().toLowerCase() == developerPassword.toLowerCase();
 }
 
 String? tchmNameForPersonnelNumber(String number) {
@@ -325,16 +394,31 @@ class AppUser {
     required this.email,
     required this.displayName,
     required this.role,
+    this.depotId,
+    this.status = AccountStatus.active,
     this.personnelNumber,
     this.assignedColumnId,
+    this.accessBlocked = false,
   });
 
   final String id;
   final String email;
   final String displayName;
   final UserRole role;
+
+  /// Депо, к которому привязан человек: `tch16`. Пока данные лежат в общих
+  /// коллекциях, поле только показывается в интерфейсе — разделять по нему
+  /// доступ будем на фазе мультидепо.
+  final String? depotId;
+
+  final AccountStatus status;
   final String? personnelNumber;
   final String? assignedColumnId;
+
+  /// Временный признак: пользователь вошёл, но правила запретили чтение его
+  /// профиля (включена полная блокировка, а роль — не разработчик). В базу не
+  /// пишется, живёт только в потоке авторизации.
+  final bool accessBlocked;
 
   bool canAddToColumn(String columnId) {
     return role.canEditAny ||
@@ -345,11 +429,23 @@ class AppUser {
     return canAddToColumn(machinist.columnId);
   }
 
+  /// Название депо для шапки и профиля.
+  String get depotTitle => MoscowDepots.titleFor(depotId);
+
+  /// Разработчик работает поверх всех депо, поэтому ожидание подтверждения
+  /// его не касается — иначе снять блокировку будет некому.
+  bool get awaitingApproval =>
+      status == AccountStatus.pending && role != UserRole.developer;
+
+  bool get disabled => status == AccountStatus.disabled;
+
   Map<String, Object?> toMap() {
     return {
       'email': email,
       'displayName': displayName,
       'role': role.key,
+      'depotId': depotId,
+      'status': status.name,
       'personnelNumber': personnelNumber,
       'assignedColumnId': assignedColumnId,
     };
@@ -361,6 +457,8 @@ class AppUser {
       email: map['email'] as String? ?? '',
       displayName: map['displayName'] as String? ?? 'Пользователь',
       role: roleFromString(map['role']),
+      depotId: map['depotId'] as String?,
+      status: statusFromString(map['status']),
       personnelNumber: map['personnelNumber'] as String?,
       assignedColumnId: map['assignedColumnId'] as String?,
     );
@@ -375,9 +473,15 @@ class ColumnGroup {
     required this.instructorName,
     required this.tchmName,
     required this.tchmPersonnelNumber,
+    this.depotId,
   });
 
   final String id;
+
+  /// Депо, которому принадлежит колонна. У записей, созданных до перехода
+  /// на мультидепо, пусто — их проставляет скрипт миграции.
+  final String? depotId;
+
   final int number;
   final String title;
   final String instructorName;
@@ -392,6 +496,7 @@ class ColumnGroup {
   }) {
     return ColumnGroup(
       id: id,
+      depotId: depotId,
       number: number,
       title: title ?? this.title,
       instructorName: instructorName ?? this.instructorName,
@@ -402,6 +507,7 @@ class ColumnGroup {
 
   Map<String, Object?> toMap() {
     return {
+      'depotId': depotId,
       'number': number,
       'title': title,
       'instructorName': instructorName,
@@ -413,6 +519,7 @@ class ColumnGroup {
   static ColumnGroup fromMap(String id, Map<String, dynamic> map) {
     return ColumnGroup(
       id: id,
+      depotId: map['depotId'] as String?,
       number: (map['number'] as num?)?.toInt() ?? 0,
       title: map['title'] as String? ?? 'Колонна',
       instructorName: map['instructorName'] as String? ?? '',
@@ -427,6 +534,7 @@ class Machinist {
     required this.id,
     required this.columnId,
     required this.columnNumber,
+    this.depotId,
     required this.fullName,
     required this.classRank,
     required this.workStart,
@@ -445,6 +553,10 @@ class Machinist {
   });
 
   final String id;
+
+  /// Депо машиниста. Пусто у записей, созданных до мультидепо.
+  final String? depotId;
+
   final String columnId;
   final int columnNumber;
   final String fullName;
@@ -465,6 +577,7 @@ class Machinist {
 
   Machinist copyWith({
     String? id,
+    String? depotId,
     String? columnId,
     int? columnNumber,
     String? fullName,
@@ -485,6 +598,7 @@ class Machinist {
   }) {
     return Machinist(
       id: id ?? this.id,
+      depotId: depotId ?? this.depotId,
       columnId: columnId ?? this.columnId,
       columnNumber: columnNumber ?? this.columnNumber,
       fullName: fullName ?? this.fullName,
@@ -507,6 +621,7 @@ class Machinist {
 
   Map<String, Object?> toMap() {
     return {
+      'depotId': depotId,
       'columnId': columnId,
       'columnNumber': columnNumber,
       'fullName': fullName,
@@ -531,6 +646,7 @@ class Machinist {
   static Machinist fromMap(String id, Map<String, dynamic> map) {
     return Machinist(
       id: id,
+      depotId: map['depotId'] as String?,
       columnId: map['columnId'] as String? ?? '',
       columnNumber: (map['columnNumber'] as num?)?.toInt() ?? 0,
       fullName: map['fullName'] as String? ?? '',
@@ -599,7 +715,7 @@ extension CheckDisciplineX on CheckDiscipline {
   String get label => switch (this) {
     CheckDiscipline.kip => 'КИП',
     CheckDiscipline.tra => 'ТРА',
-    CheckDiscipline.atz => 'АТЗ',
+    CheckDiscipline.atz => 'АЗЗ',
     CheckDiscipline.coupling => 'Сцеп',
   };
 
@@ -733,12 +849,100 @@ IconData? checkStatusIcon(CheckStatus status) => switch (status) {
   CheckStatus.ok => null,
 };
 
+/// Данные, которые человек заполняет при регистрации.
+class RegistrationRequest {
+  const RegistrationRequest({
+    required this.depotId,
+    required this.displayName,
+    required this.personnelNumber,
+    required this.email,
+    required this.password,
+    required this.inviteCode,
+    required this.role,
+  });
+
+  final String depotId;
+  final String displayName;
+  final String personnelNumber;
+  final String email;
+  final String password;
+  final String inviteCode;
+
+  /// Роль, которую человек выбрал сам. Работает только как запрос: если он
+  /// есть в реестре депо, роль возьмётся оттуда — реестр главнее выбора.
+  final UserRole role;
+}
+
+class AuthException implements Exception {
+  const AuthException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Запись реестра сотрудников депо: кому какая роль полагается.
+///
+/// Реестр — второй замок регистрации. Ключ подтверждает депо, реестр
+/// подтверждает человека: без записи в нём ключ даёт только просмотр.
+/// Заодно это способ не потерять роли при переходе на вход по почте —
+/// реестр ТЧ-16 наполняется из уже существующих профилей.
+/// Домены почты, с которых разрешена регистрация.
+///
+/// Пустой список — принимается любой адрес. Если в депо есть служебные ящики,
+/// вписать сюда их домены: это бесплатный второй замок, ключ руководителя
+/// перестаёт работать с посторонней почтой. Проверка идёт на устройстве, так
+/// что это заслон от ошибки и от случайного человека, а не от подделки —
+/// всерьёз домен проверит только сервер.
+const allowedEmailDomains = <String>[];
+
+bool emailDomainAllowed(String email) {
+  if (allowedEmailDomains.isEmpty) return true;
+  final at = email.lastIndexOf('@');
+  if (at < 0) return false;
+  final domain = email.substring(at + 1).toLowerCase();
+  return allowedEmailDomains.any((allowed) => domain == allowed.toLowerCase());
+}
+
+class RosterEntry {
+  const RosterEntry({required this.role, this.assignedColumnId, this.fullName});
+
+  final UserRole role;
+  final String? assignedColumnId;
+  final String? fullName;
+
+  static RosterEntry fromMap(Map<String, dynamic> map) {
+    return RosterEntry(
+      role: roleFromString(map['role']),
+      assignedColumnId: map['assignedColumnId'] as String?,
+      fullName: map['fullName'] as String?,
+    );
+  }
+
+  /// Идентификатор записи: депо и табельный номер вместе, потому что
+  /// табельные в разных депо повторяются.
+  static String idFor(String depotId, String personnelNumber) {
+    return '${depotId}_$personnelNumber';
+  }
+}
+
 abstract class AppAuth {
   Stream<AppUser?> authStateChanges();
 
-  Future<void> signInAsGuest();
+  Future<void> signIn({required String email, required String password});
 
-  Future<void> signInAsTchm(String personnelNumber);
+  Future<void> register(RegistrationRequest request);
+
+  Future<void> sendPasswordReset(String email);
+
+  /// Повторная отправка письма с подтверждением адреса.
+  Future<void> resendVerification();
+
+  /// Перечитывает состояние подтверждения почты с сервера: пользователь
+  /// переходит по ссылке в почтовом клиенте, а приложение об этом само
+  /// не узнает. Возвращает true, если адрес уже подтверждён.
+  Future<bool> refreshVerification();
 
   Future<void> signOut();
 }
@@ -790,8 +994,19 @@ class FirebaseAppAuth implements AppAuth {
               controller.add(AppUser.fromMap(user.uid, data));
             },
             onError: (Object _) {
-              // Ошибка чтения профиля (например, после выхода) не должна
-              // останавливать поток авторизации.
+              // Чтение профиля отклонено. Штатно так бывает при включённой
+              // полной блокировке для не-разработчика — показываем экран
+              // техработ, а не бесконечную загрузку. Роль разработчика
+              // читается правилами всегда, поэтому сюда он не попадает.
+              controller.add(
+                AppUser(
+                  id: user.uid,
+                  email: user.email ?? '',
+                  displayName: user.displayName ?? 'Пользователь',
+                  role: UserRole.viewer,
+                  accessBlocked: true,
+                ),
+              );
             },
           );
         });
@@ -804,73 +1019,153 @@ class FirebaseAppAuth implements AppAuth {
     return controller.stream;
   }
 
-  @override
-  Future<void> signInAsGuest() async {
-    final user = await _anonymousUser();
-    await firestore
-        .collection('users')
-        .doc(user.uid)
-        .set(
-          AppUser(
-            id: user.uid,
-            email: user.email ?? '',
-            displayName: 'Гость',
-            role: UserRole.viewer,
-          ).toMap(),
-          SetOptions(merge: true),
-        );
+  /// Что реестр депо говорит про этот табельный номер.
+  Future<RosterEntry?> _rosterEntry(
+    String depotId,
+    String personnelNumber,
+  ) async {
+    try {
+      final snapshot = await firestore
+          .collection('roster')
+          .doc(RosterEntry.idFor(depotId, personnelNumber))
+          .get();
+      final data = snapshot.data();
+      if (data == null) return null;
+      return RosterEntry.fromMap(data);
+    } catch (_) {
+      // Реестр недоступен — не повод ронять регистрацию. Человек получит
+      // просмотр, роль ему поднимет руководитель.
+      return null;
+    }
   }
 
   @override
-  Future<void> signInAsTchm(String personnelNumber) async {
-    final cleanNumber = personnelNumber.trim();
-    if (cleanNumber.isEmpty) {
-      throw StateError('Введите табельный номер.');
-    }
-    final tchmName = tchmNameForPersonnelNumber(cleanNumber);
-    if (tchmName == null) {
-      throw StateError('Табельный номер не найден в списке ТЧМ.');
-    }
-    final user = await _anonymousUser();
-    await firestore
-        .collection('users')
-        .doc(user.uid)
-        .set(
-          AppUser(
-            id: user.uid,
-            email: user.email ?? '',
-            displayName: tchmName,
-            role: isDeveloperPersonnelNumber(cleanNumber)
-                ? UserRole.developer
-                : UserRole.tchm,
-            personnelNumber: cleanNumber,
-          ).toMap(),
-          SetOptions(merge: true),
-        );
-    await _ensureDefaultColumns();
-  }
-
-  Future<void> _ensureDefaultColumns() async {
-    final batch = firestore.batch();
-    for (final column in SeedData.columns) {
-      batch.set(
-        firestore.collection('columns').doc(column.id),
-        column.toMap(),
-        SetOptions(merge: true),
+  Future<void> signIn({required String email, required String password}) async {
+    try {
+      await fb_auth.FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
       );
+    } on fb_auth.FirebaseAuthException catch (error) {
+      throw AuthException(_messageFor(error));
     }
-    await batch.commit();
   }
 
-  Future<fb_auth.User> _anonymousUser() async {
-    final current = fb_auth.FirebaseAuth.instance.currentUser;
-    if (current != null) return current;
-    final credential = await fb_auth.FirebaseAuth.instance.signInAnonymously();
+  @override
+  Future<void> register(RegistrationRequest request) async {
+    // Ключ проверяется до создания учётной записи: иначе при неверном ключе
+    // в Firebase Auth останется висеть пользователь без профиля.
+    final grant = await const LocalInviteVerifier().verify(
+      depotId: request.depotId,
+      code: request.inviteCode,
+    );
+
+    final fb_auth.UserCredential credential;
+    try {
+      credential = await fb_auth.FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+            email: request.email.trim(),
+            password: request.password,
+          );
+    } on fb_auth.FirebaseAuthException catch (error) {
+      throw AuthException(_messageFor(error));
+    }
+
     final user = credential.user;
     if (user == null) {
-      throw StateError('Не удалось выполнить вход.');
+      throw const AuthException('Не удалось создать учётную запись.');
     }
-    return user;
+
+    // Реестр главнее выбора: если человек в нём есть, роль берём оттуда, а
+    // выбранную в форме игнорируем. Нет записи — остаётся выбор, и тогда
+    // единственным барьером работает ключ.
+    final roster = request.personnelNumber.trim().isEmpty
+        ? null
+        : await _rosterEntry(grant.depotId, request.personnelNumber.trim());
+    final role = roster?.role ?? request.role;
+
+    await user.updateDisplayName(request.displayName);
+    await firestore
+        .collection('users')
+        .doc(user.uid)
+        .set(
+          AppUser(
+            id: user.uid,
+            email: request.email.trim(),
+            displayName: request.displayName,
+            role: role,
+            depotId: grant.depotId,
+            // Инструктор без своей колонны бесполезен, поэтому привязка
+            // переезжает из реестра — так роли переживают переход со
+            // старого входа по табельному на вход по почте.
+            assignedColumnId: roster?.assignedColumnId,
+            // Права выданы, но до подтверждения почты внутрь не пускаем.
+            status: AccountStatus.pending,
+            personnelNumber: request.personnelNumber.trim(),
+          ).toMap()
+            // Галочка, которую никто не записал, ничего не доказывает.
+            // Храним версию документов и время: через год иначе не
+            // установить, с каким именно текстом человек соглашался.
+            ..['consentVersion'] = legalDocsVersion
+            ..['consentAt'] = FieldValue.serverTimestamp(),
+          SetOptions(merge: true),
+        );
+    await user.sendEmailVerification();
+  }
+
+  @override
+  Future<void> sendPasswordReset(String email) async {
+    try {
+      await fb_auth.FirebaseAuth.instance.sendPasswordResetEmail(
+        email: email.trim(),
+      );
+    } on fb_auth.FirebaseAuthException catch (error) {
+      throw AuthException(_messageFor(error));
+    }
+  }
+
+  @override
+  Future<void> resendVerification() async {
+    final user = fb_auth.FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    await user.sendEmailVerification();
+  }
+
+  @override
+  Future<bool> refreshVerification() async {
+    final user = fb_auth.FirebaseAuth.instance.currentUser;
+    if (user == null) return false;
+    await user.reload();
+    final refreshed = fb_auth.FirebaseAuth.instance.currentUser;
+    final verified = refreshed?.emailVerified ?? false;
+    if (verified) {
+      // Почта подтверждена — снимаем ожидание, чтобы AuthGate пропустил
+      // человека дальше. Проверять подтверждение правилами Firestore нельзя,
+      // поэтому статус хранится в профиле.
+      await firestore.collection('users').doc(refreshed!.uid).set({
+        'status': AccountStatus.active.name,
+      }, SetOptions(merge: true));
+    }
+    return verified;
+  }
+
+
+
+  String _messageFor(fb_auth.FirebaseAuthException error) {
+    return switch (error.code) {
+      'invalid-email' => 'Адрес почты введён неверно.',
+      'user-disabled' => 'Доступ для этой учётной записи закрыт.',
+      'user-not-found' ||
+      'wrong-password' ||
+      'invalid-credential' => 'Неверная почта или пароль.',
+      'email-already-in-use' =>
+        'На эту почту уже есть учётная запись. Войдите или восстановите пароль.',
+      'weak-password' => 'Пароль слишком простой — нужно не меньше 8 знаков.',
+      'network-request-failed' => 'Нет связи с сервером. Проверьте интернет.',
+      'too-many-requests' =>
+        'Слишком много попыток подряд. Попробуйте через несколько минут.',
+      _ => 'Не удалось выполнить вход: ${error.message ?? error.code}',
+    };
   }
 
   @override
@@ -885,6 +1180,7 @@ class DemoAppAuth implements AppAuth {
   }
 
   final _controller = StreamController<AppUser?>.broadcast();
+  final _registered = <String, AppUser>{};
   AppUser? _user;
 
   @override
@@ -894,37 +1190,74 @@ class DemoAppAuth implements AppAuth {
   }
 
   @override
-  Future<void> signInAsGuest() async {
-    _user = const AppUser(
-      id: 'demo-guest',
-      email: '',
-      displayName: 'Гость',
-      role: UserRole.viewer,
-    );
+  Future<void> signIn({required String email, required String password}) async {
+    final address = email.trim();
+    if (address.isEmpty || password.isEmpty) {
+      throw const AuthException('Введите почту и пароль.');
+    }
+    // Демо-режим работает без сервера: пароль не проверяется, вход открывает
+    // тот профиль, который был создан регистрацией в этом же запуске.
+    _user =
+        _registered[address.toLowerCase()] ??
+        AppUser(
+          id: 'demo-$address',
+          email: address,
+          displayName: address,
+          role: UserRole.tchm,
+          depotId: MoscowDepots.all.first.id,
+        );
     _controller.add(_user);
   }
 
   @override
-  Future<void> signInAsTchm(String personnelNumber) async {
-    final cleanNumber = personnelNumber.trim();
-    if (cleanNumber.isEmpty) {
-      throw StateError('Введите табельный номер.');
-    }
-    final tchmName = tchmNameForPersonnelNumber(cleanNumber);
-    if (tchmName == null) {
-      throw StateError('Табельный номер не найден в списке ТЧМ.');
-    }
-    _user = AppUser(
-      id: 'demo-tchm-$cleanNumber',
-      email: '',
-      displayName: tchmName,
-      role: isDeveloperPersonnelNumber(cleanNumber)
-          ? UserRole.developer
-          : UserRole.tchm,
-      personnelNumber: cleanNumber,
+  Future<void> register(RegistrationRequest request) async {
+    final grant = await const LocalInviteVerifier().verify(
+      depotId: request.depotId,
+      code: request.inviteCode,
     );
+    final address = request.email.trim();
+    final user = AppUser(
+      id: 'demo-$address',
+      email: address,
+      displayName: request.displayName,
+      role: request.role,
+      depotId: grant.depotId,
+      personnelNumber: request.personnelNumber,
+      status: AccountStatus.pending,
+    );
+    _registered[address.toLowerCase()] = user;
+    _user = user;
     _controller.add(_user);
   }
+
+  @override
+  Future<void> sendPasswordReset(String email) async {}
+
+  @override
+  Future<void> resendVerification() async {}
+
+  @override
+  Future<bool> refreshVerification() async {
+    final current = _user;
+    if (current == null) return false;
+    // Почтового ящика в демо-режиме нет, поэтому подтверждение считается
+    // полученным сразу — иначе экран ожидания не пройти.
+    _user = AppUser(
+      id: current.id,
+      email: current.email,
+      displayName: current.displayName,
+      role: current.role,
+      depotId: current.depotId,
+      status: AccountStatus.active,
+      personnelNumber: current.personnelNumber,
+      assignedColumnId: current.assignedColumnId,
+    );
+    _registered[current.email.toLowerCase()] = _user!;
+    _controller.add(_user);
+    return true;
+  }
+
+
 
   @override
   Future<void> signOut() async {
@@ -933,12 +1266,81 @@ class DemoAppAuth implements AppAuth {
   }
 }
 
+/// Флаг обслуживания: лежит в Firestore по пути `config/app` и проверяется
+/// правилами безопасности на сервере. Меняется кнопкой из аккаунта
+/// разработчика, поэтому не требует ни деплоя правил, ни обновления сборок
+/// у пользователей.
+class AppLock {
+  const AppLock({
+    this.writesBlocked = false,
+    this.readsBlocked = false,
+    this.updatedBy = '',
+  });
+
+  final bool writesBlocked;
+  final bool readsBlocked;
+  final String updatedBy;
+
+  bool get isActive => writesBlocked || readsBlocked;
+
+  AppLock copyWith({bool? writesBlocked, bool? readsBlocked}) {
+    return AppLock(
+      writesBlocked: writesBlocked ?? this.writesBlocked,
+      readsBlocked: readsBlocked ?? this.readsBlocked,
+      updatedBy: updatedBy,
+    );
+  }
+
+  Map<String, Object?> toMap(String author) {
+    return {
+      'writesBlocked': writesBlocked,
+      'readsBlocked': readsBlocked,
+      'updatedAt': Timestamp.fromDate(DateTime.now()),
+      'updatedBy': author,
+    };
+  }
+
+  static AppLock fromMap(Map<String, dynamic>? map) {
+    if (map == null) return const AppLock();
+    return AppLock(
+      writesBlocked: map['writesBlocked'] as bool? ?? false,
+      readsBlocked: map['readsBlocked'] as bool? ?? false,
+      updatedBy: map['updatedBy']?.toString() ?? '',
+    );
+  }
+}
+
 abstract class TchmRepository {
   Stream<List<ColumnGroup>> watchColumns();
 
   Stream<List<Machinist>> watchMachinists({String? columnId});
 
-  Future<void> ensureDefaultColumns(AppUser user);
+  /// Учётные записи. Нужны одному экрану — сводке по депо у разработчика,
+  /// — поэтому обычный репозиторий отдаёт только свою: запрос ограничен
+  /// депо ровно так же, как колонны и машинисты.
+  Stream<List<AppUser>> watchUsers();
+
+  /// Открывает или закрывает доступ учётным записям. Список, а не одна
+  /// запись: у старого входа по табельному один человек нередко имеет
+  /// несколько профилей, и закрыть надо все сразу — иначе он войдёт под
+  /// оставшимся.
+  Future<void> setAccountStatus({
+    required List<String> userIds,
+    required AccountStatus status,
+    required AppUser by,
+  });
+
+  /// Удаляет профили из базы. Насовсем: отменить нельзя, и учётную запись в
+  /// Firebase Auth это не трогает — вход по ней остаётся, просто профиля у
+  /// него больше нет.
+  Future<void> deleteAccounts({
+    required List<String> userIds,
+    required AppUser by,
+  });
+
+  /// Заводит колонну с указанным номером. ТЧМ в ней — тот, кто её создал:
+  /// его фамилию и табельный берём из профиля, спрашивать нечего.
+  Future<void> createColumn({required int number, required AppUser user});
 
   Future<void> seedDefaults(AppUser user);
 
@@ -947,27 +1349,92 @@ abstract class TchmRepository {
   Future<void> deleteMachinist(Machinist machinist, AppUser user);
 
   Future<void> updateColumn(ColumnGroup column, AppUser user);
+
+  Future<void> deleteColumn(ColumnGroup column, AppUser user);
+
+  Stream<AppLock> watchLock();
+
+  Future<void> setLock(AppLock lock, AppUser user);
 }
 
 class FirebaseTchmRepository implements TchmRepository {
-  FirebaseTchmRepository(this.firestore);
+  FirebaseTchmRepository(this.firestore, {this.depotId});
 
   final FirebaseFirestore firestore;
 
+  /// Депо, данными которого работает этот репозиторий. Все запросы
+  /// ограничены им, поэтому чужие колонны и машинисты не приходят даже в
+  /// память приложения. Пусто только у разработчика — он работает поверх
+  /// всех депо, и правила это ему разрешают.
+  final String? depotId;
+
+  /// Ограничивает запрос своим депо. Правила Firestore устроены так, что
+  /// запрос без этого фильтра будет отклонён сервером целиком, а не
+  /// отфильтрован — то есть забыть его нельзя незаметно.
+  Query<Map<String, dynamic>> _scoped(String collection) {
+    final Query<Map<String, dynamic>> query = firestore.collection(collection);
+    if (depotId == null) return query;
+    return query.where('depotId', isEqualTo: depotId);
+  }
+
   @override
   Stream<List<ColumnGroup>> watchColumns() {
-    return firestore.collection('columns').orderBy('number').snapshots().map((
-      snapshot,
-    ) {
-      return snapshot.docs
+    return _scoped('columns').snapshots().map((snapshot) {
+      final columns = snapshot.docs
           .map((doc) => ColumnGroup.fromMap(doc.id, doc.data()))
           .toList();
+      // Сортируем на клиенте: с фильтром по депо серверная сортировка
+      // потребовала бы составного индекса ради десятка документов.
+      columns.sort((a, b) => a.number.compareTo(b.number));
+      return columns;
     });
   }
 
   @override
+  Stream<List<AppUser>> watchUsers() {
+    return _scoped('users').snapshots().map(
+      (snapshot) => snapshot.docs
+          .map((doc) => AppUser.fromMap(doc.id, doc.data()))
+          .toList(),
+    );
+  }
+
+  @override
+  Future<void> setAccountStatus({
+    required List<String> userIds,
+    required AccountStatus status,
+    required AppUser by,
+  }) async {
+    if (!by.role.canManageAccounts) {
+      throw StateError('Закрывать доступ может администратор или разработчик.');
+    }
+    final batch = firestore.batch();
+    for (final id in userIds) {
+      batch.set(firestore.collection('users').doc(id), {
+        'status': status.name,
+      }, SetOptions(merge: true));
+    }
+    await batch.commit();
+  }
+
+  @override
+  Future<void> deleteAccounts({
+    required List<String> userIds,
+    required AppUser by,
+  }) async {
+    if (!by.role.canManageAccounts) {
+      throw StateError('Удалять учётные записи может администратор или разработчик.');
+    }
+    final batch = firestore.batch();
+    for (final id in userIds) {
+      batch.delete(firestore.collection('users').doc(id));
+    }
+    await batch.commit();
+  }
+
+  @override
   Stream<List<Machinist>> watchMachinists({String? columnId}) {
-    Query<Map<String, dynamic>> query = firestore.collection('machinists');
+    Query<Map<String, dynamic>> query = _scoped('machinists');
     if (columnId != null) {
       query = query.where('columnId', isEqualTo: columnId);
     }
@@ -985,18 +1452,44 @@ class FirebaseTchmRepository implements TchmRepository {
     });
   }
 
+  /// Идентификатор документа колонны с префиксом депо: у каждого депо свои
+  /// колонны с одинаковыми номерами, и без префикса они затирали бы друг
+  /// друга. У ТЧ-16 записи созданы до мультидепо и сохраняют прежние `id` —
+  /// их не трогаем, иначе потеряется связь с машинистами.
+  String _columnDocId(ColumnGroup column) {
+    return depotId == null ? column.id : '${depotId}_${column.id}';
+  }
+
   @override
-  Future<void> ensureDefaultColumns(AppUser user) async {
-    if (!user.role.canEditAny) return;
-    final batch = firestore.batch();
-    for (final column in SeedData.columns) {
-      batch.set(
-        firestore.collection('columns').doc(column.id),
-        column.toMap(),
-        SetOptions(merge: true),
-      );
+  Future<void> createColumn({
+    required int number,
+    required AppUser user,
+  }) async {
+    if (!user.role.canEditAny) {
+      throw StateError('Создавать колонны может ТЧМ, оператор или админ.');
     }
-    await batch.commit();
+    final depot = depotId ?? user.depotId;
+    if (depot == null) {
+      throw StateError('Не удалось определить депо.');
+    }
+    // Номер уникален внутри депо, поэтому он же и идентификатор документа:
+    // так две одновременные попытки завести колонну №5 не создадут дубль.
+    final ref = firestore.collection('columns').doc('${depot}_column_$number');
+    final existing = await ref.get();
+    if (existing.exists) {
+      throw StateError('Колонна №$number в депо уже есть.');
+    }
+    await ref.set(
+      ColumnGroup(
+        id: ref.id,
+        depotId: depot,
+        number: number,
+        title: 'Колонна №$number',
+        instructorName: '',
+        tchmName: user.displayName,
+        tchmPersonnelNumber: user.personnelNumber ?? '',
+      ).toMap(),
+    );
   }
 
   @override
@@ -1007,15 +1500,15 @@ class FirebaseTchmRepository implements TchmRepository {
     final batch = firestore.batch();
     for (final column in SeedData.columns) {
       batch.set(
-        firestore.collection('columns').doc(column.id),
-        column.toMap(),
+        firestore.collection('columns').doc(_columnDocId(column)),
+        column.toMap()..['depotId'] = depotId,
         SetOptions(merge: true),
       );
     }
     for (final machinist in SeedData.machinists) {
       batch.set(
         firestore.collection('machinists').doc(machinist.id),
-        machinist.toMap(),
+        machinist.toMap()..['depotId'] = depotId,
         SetOptions(merge: true),
       );
     }
@@ -1034,6 +1527,9 @@ class FirebaseTchmRepository implements TchmRepository {
       machinist
           .copyWith(
             id: ref.id,
+            // Депо проставляем всегда: иначе новая запись останется без
+            // привязки и выпадет из выборки собственного депо.
+            depotId: machinist.depotId ?? depotId ?? user.depotId,
             updatedAt: DateTime.now(),
             updatedBy: user.displayName,
           )
@@ -1052,16 +1548,53 @@ class FirebaseTchmRepository implements TchmRepository {
 
   @override
   Future<void> updateColumn(ColumnGroup column, AppUser user) async {
-    if (!user.role.isDeveloper) {
-      throw StateError('Изменять колонну может только разработчик.');
+    // Раньше правка была только у разработчика, и когда ТЧМ увольнялся,
+    // колонну оставалось либо заводить заново, либо ждать его. Менять там
+    // нужно фамилию ведущего, а это работа самих ТЧМ депо.
+    if (!user.role.canEditAny) {
+      throw StateError('Изменять колонну может ТЧМ, оператор или админ.');
+    }
+    // Чужое депо не правим даже с правами: у разработчика репозиторий без
+    // фильтра, и промах по колонне соседнего депо ничем бы не остановился.
+    final target = column.depotId ?? depotId;
+    if (!user.role.canManageAllDepots && target != null && target != user.depotId) {
+      throw StateError('Колонна принадлежит другому депо.');
     }
     await firestore
         .collection('columns')
         .doc(column.id)
-        .set(column.toMap(), SetOptions(merge: true));
+        .set(
+          column.toMap()..['depotId'] = target,
+          SetOptions(merge: true),
+        );
+  }
+
+  @override
+  Future<void> deleteColumn(ColumnGroup column, AppUser user) async {
+    throw UnsupportedError('Удаление колонн доступно через основной API.');
+  }
+
+  DocumentReference<Map<String, dynamic>> get _lockDoc =>
+      firestore.collection('config').doc('app');
+
+  @override
+  Stream<AppLock> watchLock() {
+    return _lockDoc
+        .snapshots()
+        .map((doc) => AppLock.fromMap(doc.data()))
+        .handleError((Object _) {});
+  }
+
+  @override
+  Future<void> setLock(AppLock lock, AppUser user) async {
+    if (!user.role.canManageDatabaseLock) {
+      throw StateError('Режим обслуживания доступен только разработчику.');
+    }
+    await _lockDoc.set(lock.toMap(user.displayName), SetOptions(merge: true));
   }
 }
 
+/// Демо-репозиторий: депо не разделяет, всё живёт в памяти одного запуска.
 class LocalTchmRepository implements TchmRepository {
   LocalTchmRepository()
     : _columns = [...SeedData.columns],
@@ -1073,6 +1606,8 @@ class LocalTchmRepository implements TchmRepository {
   final List<Machinist> _machinists;
   final _columnsController = StreamController<List<ColumnGroup>>.broadcast();
   final _machinistsController = StreamController<List<Machinist>>.broadcast();
+  final _lockController = StreamController<AppLock>.broadcast();
+  var _lock = const AppLock();
 
   void _emit() {
     _columnsController.add(List.unmodifiable(_columns));
@@ -1091,6 +1626,29 @@ class LocalTchmRepository implements TchmRepository {
   }
 
   @override
+  Stream<List<AppUser>> watchUsers() async* {
+    // В демо-режиме учётных записей нет: вход в него не создаёт профилей.
+    yield const <AppUser>[];
+  }
+
+  @override
+  Future<void> setAccountStatus({
+    required List<String> userIds,
+    required AccountStatus status,
+    required AppUser by,
+  }) async {
+    // В демо-режиме учётных записей нет, закрывать нечего.
+  }
+
+  @override
+  Future<void> deleteAccounts({
+    required List<String> userIds,
+    required AppUser by,
+  }) async {
+    // В демо-режиме учётных записей нет, удалять нечего.
+  }
+
+  @override
   Stream<List<Machinist>> watchMachinists({String? columnId}) async* {
     List<Machinist> filter(List<Machinist> items) {
       if (columnId == null) return items;
@@ -1102,11 +1660,26 @@ class LocalTchmRepository implements TchmRepository {
   }
 
   @override
-  Future<void> ensureDefaultColumns(AppUser user) async {
-    if (!user.role.canEditAny) return;
+  Future<void> createColumn({
+    required int number,
+    required AppUser user,
+  }) async {
+    if (_columns.any((column) => column.number == number)) {
+      throw StateError('Колонна №$number в депо уже есть.');
+    }
     _columns
-      ..clear()
-      ..addAll(SeedData.columns);
+      ..add(
+        ColumnGroup(
+          id: 'column_$number',
+          depotId: user.depotId,
+          number: number,
+          title: 'Колонна №$number',
+          instructorName: '',
+          tchmName: user.displayName,
+          tchmPersonnelNumber: user.personnelNumber ?? '',
+        ),
+      )
+      ..sort((a, b) => a.number.compareTo(b.number));
     _emit();
   }
 
@@ -1156,8 +1729,8 @@ class LocalTchmRepository implements TchmRepository {
 
   @override
   Future<void> updateColumn(ColumnGroup column, AppUser user) async {
-    if (!user.role.isDeveloper) {
-      throw StateError('Изменять колонну может только разработчик.');
+    if (!user.role.canEditAny) {
+      throw StateError('Изменять колонну может ТЧМ, оператор или админ.');
     }
     final index = _columns.indexWhere((value) => value.id == column.id);
     if (index != -1) {
@@ -1165,10 +1738,195 @@ class LocalTchmRepository implements TchmRepository {
     }
     _emit();
   }
+
+  @override
+  Future<void> deleteColumn(ColumnGroup column, AppUser user) async {
+    if (!user.role.canEditAny ||
+        (!user.role.canManageAllDepots && column.depotId != user.depotId)) {
+      throw StateError('Нет прав на удаление этой колонны.');
+    }
+    if (_lock.writesBlocked || _lock.readsBlocked) {
+      throw StateError('Идут технические работы.');
+    }
+    if (_machinists.any((item) => item.columnId == column.id)) {
+      throw StateError('Сначала перенесите машинистов в другую колонну.');
+    }
+    _columns.removeWhere((item) => item.id == column.id);
+    _emit();
+  }
+
+  @override
+  Stream<AppLock> watchLock() async* {
+    yield _lock;
+    yield* _lockController.stream;
+  }
+
+  @override
+  Future<void> setLock(AppLock lock, AppUser user) async {
+    if (!user.role.canManageDatabaseLock) {
+      throw StateError('Режим обслуживания доступен только разработчику.');
+    }
+    _lock = lock;
+    _lockController.add(lock);
+  }
 }
 
-class AuthGate extends StatelessWidget {
+/// Экран, который видит обычный пользователь при включённой полной
+/// блокировке. Данные в базе целы — закрыт только доступ из приложения.
+class MaintenanceScreen extends StatelessWidget {
+  const MaintenanceScreen({super.key, this.onRetry});
+
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final deps = AppDependencies.of(context);
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.engineering_outlined,
+                size: 72,
+                color: AppPalette.textSecondary,
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Ведутся технические работы',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Доступ к приложению временно приостановлен '
+                'разработчиком. Данные сохранены. Попробуйте позже.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppPalette.textSecondary),
+              ),
+              const SizedBox(height: 24),
+              if (onRetry != null)
+                OutlinedButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Проверить доступ'),
+                ),
+              OutlinedButton.icon(
+                onPressed: deps.auth.signOut,
+                icon: const Icon(Icons.logout),
+                label: const Text('Выйти'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Проверяет режим сервера при входе и слушает последующие обновления.
+class ApiMaintenanceGate extends StatefulWidget {
+  const ApiMaintenanceGate({
+    super.key,
+    required this.repository,
+    required this.user,
+    required this.child,
+  });
+
+  final ApiTchmRepository repository;
+  final AppUser user;
+  final Widget child;
+
+  @override
+  State<ApiMaintenanceGate> createState() => _ApiMaintenanceGateState();
+}
+
+class _ApiMaintenanceGateState extends State<ApiMaintenanceGate> {
+  late final Stream<AppLock> _lock = widget.repository.watchLock();
+  bool _checking = true;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _checking = true;
+      _error = null;
+    });
+    try {
+      await widget.repository.refresh();
+    } catch (error) {
+      if (error is! ApiException || error.maintenanceLock == null) {
+        _error = error;
+      }
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AppLock>(
+      stream: _lock,
+      builder: (context, snapshot) {
+        if (_checking) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (_error != null) {
+          return Scaffold(
+            body: Center(
+              child: OutlinedButton.icon(
+                onPressed: _refresh,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Не удалось проверить доступ. Повторить'),
+              ),
+            ),
+          );
+        }
+        if (snapshot.data?.readsBlocked == true &&
+            !widget.user.role.canManageDatabaseLock) {
+          return MaintenanceScreen(onRetry: _refresh);
+        }
+        return widget.child;
+      },
+    );
+  }
+}
+
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  TchmRepository? _depotRepository;
+  String? _depotRepositoryFor;
+
+  /// Репозиторий, привязанный к депо вошедшего человека: и просмотр, и
+  /// правка идут только по своему депо. Держим его между перестроениями —
+  /// иначе на каждый кадр пересоздавались бы подписки на Firestore.
+  TchmRepository _repositoryFor(AppUser user, AppDependencies deps) {
+    final base = deps.repository;
+    // Разработчик работает поверх всех депо, демо-режим живёт в памяти, а у
+    // нового API депо навязывает сервер по профилю — им подмена не нужна.
+    if (user.role.canManageAllDepots || base is! FirebaseTchmRepository) return base;
+    if (_depotRepository != null && _depotRepositoryFor == user.depotId) {
+      return _depotRepository!;
+    }
+    _depotRepositoryFor = user.depotId;
+    return _depotRepository = FirebaseTchmRepository(
+      base.firestore,
+      depotId: user.depotId,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1182,8 +1940,42 @@ class AuthGate extends StatelessWidget {
           );
         }
         final user = snapshot.data;
+        if (user != null && user.accessBlocked) {
+          return const MaintenanceScreen();
+        }
         if (user == null) return const LoginScreen();
-        return HomeScreen(user: user);
+        if (user.disabled) return const LoginScreen();
+        if (user.awaitingApproval) {
+          return AwaitingApprovalScreen(user: user);
+        }
+        // Профиль без депо — это либо учётная запись, созданная до перехода
+        // на мультидепо, либо сбой регистрации. Показываем причину, а не
+        // пустой список: данные чужого депо ему всё равно не покажут.
+        if (user.depotId == null && !user.role.canManageAllDepots) {
+          return DepotMissingScreen(user: user);
+        }
+        // Ниже по дереву все экраны получают репозиторий своего депо:
+        // ближайший AppDependencies перекрывает корневой.
+        final screen = user.role.canManageAllDepots
+            ? DepotOverviewScreen(user: user)
+            : HomeScreen(user: user);
+        final repository = _repositoryFor(user, deps);
+        return AppDependencies(
+          repository: repository,
+          auth: deps.auth,
+          firebaseReady: deps.firebaseReady,
+          // Разработчик работает поверх всех депо, поэтому список колонн для
+          // него бессмыслен: в него сваливаются колонны всех депо разом, без
+          // подписи, чьи они. Ему первым экраном — депо, колонны внутри.
+          child: repository is ApiTchmRepository
+              ? ApiMaintenanceGate(
+                  key: ValueKey(user.id),
+                  repository: repository,
+                  user: user,
+                  child: screen,
+                )
+              : screen,
+        );
       },
     );
   }
@@ -1191,7 +1983,7 @@ class AuthGate extends StatelessWidget {
 
 // ВРЕМЕННО: режим для скриншотов App Store. Запуск:
 // flutter run --dart-define=SHOT=0  (0 — Колонны, 1 — Колонна, 2 — Требуют внимания)
-const int _shotScreen = int.fromEnvironment('SHOT', defaultValue: -1);
+const int _shotScreen = RuntimeConfig.shot;
 
 class _ShotHarness extends StatelessWidget {
   const _ShotHarness({required this.which});
@@ -1241,145 +2033,96 @@ class _ShotHarness extends StatelessWidget {
   }
 }
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+/// Фирменные цвета приложения. Палитра используется во всех депо — в шапках,
+/// кнопках, номерах колонн и новом общем знаке ТЧМ.
+abstract final class DepotBrand {
+  /// Фон эмблемы. Экран входа заливается ровно этим цветом, поэтому края
+  /// картинки не видны — она будто напечатана на самом фоне.
+  static const field = Color(0xFF000713);
 
-  @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  /// Красный с эмблемы. Яркий, поэтому только на тонких акцентах:
+  /// черта под логотипом и свечение вокруг него.
+  static const red = Color(0xFFD80F10);
+
+  /// Рабочий красный крупных поверхностей: шапки, плашки колонны, номеров
+  /// и кнопок. Фирменный на всю ширину экрана слепит, поэтому взят глубже.
+  static const redInk = Color(0xFFA0141A);
+
+  /// Края градиента на номерах колонн: светлый верх, тёмный низ.
+  /// Светлый край взят не с эмблемы, а глуше — иначе квадрат светится.
+  static const redLight = Color(0xFFC3282F);
+  static const redDeep = Color(0xFF770E13);
+
+  static const silver = Color(0xFFE9EAEC);
+  static const silverMuted = Color(0xFFBDC1CA);
+  static const ok = Color(0xFF1B7F4D);
 }
 
-class _LoginScreenState extends State<LoginScreen> {
-  static const _accessPassword = 'ТЧ-16';
+/// Главная кнопка фирменных экранов — в красном депо.
+ButtonStyle depotPrimaryButtonStyle() => FilledButton.styleFrom(
+  backgroundColor: DepotBrand.redInk,
+  foregroundColor: Colors.white,
+  disabledBackgroundColor: DepotBrand.redInk.withValues(alpha: 0.45),
+  disabledForegroundColor: Colors.white70,
+);
 
-  final _personnelNumber = TextEditingController();
-  final _password = TextEditingController();
-  var _loading = false;
-  _LoginMode? _mode;
+/// Единый знак ТЧМ для всех депо: маршрут, сходящийся в одной точке.
+class _AppMark extends StatelessWidget {
+  const _AppMark({this.size = 150});
 
-  @override
-  void dispose() {
-    _personnelNumber.dispose();
-    _password.dispose();
-    super.dispose();
-  }
-
-  bool _passwordValid() {
-    if (_normalizeAccessPassword(_password.text) ==
-        _normalizeAccessPassword(_accessPassword)) {
-      return true;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Неверный пароль доступа')));
-    return false;
-  }
-
-  Future<void> _signInAsGuest() async {
-    if (!_passwordValid()) return;
-    setState(() => _loading = true);
-    final deps = AppDependencies.of(context);
-    try {
-      await deps.auth.signInAsGuest();
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Не удалось войти: $error')));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _signInAsTchm() async {
-    final number = _personnelNumber.text.trim();
-    if (number.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Введите табельный номер ТЧМ')),
-      );
-      return;
-    }
-    if (isDeveloperPersonnelNumber(number)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Вход разработчика — через шестерёнку в углу.'),
-        ),
-      );
-      return;
-    }
-    if (!_passwordValid()) return;
-    setState(() => _loading = true);
-    final deps = AppDependencies.of(context);
-    try {
-      await deps.auth.signInAsTchm(number);
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Не удалось войти: $error')));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _openDeveloperLogin() async {
-    if (_loading) return;
-    final password = await showDialog<String>(
-      context: context,
-      builder: (_) => const _DeveloperLoginDialog(),
-    );
-    if (password == null) return;
-    await _signInAsDeveloper(password);
-  }
-
-  Future<void> _signInAsDeveloper(String password) async {
-    if (!isDeveloperPasswordValid(password)) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Неверный пароль разработчика')),
-      );
-      return;
-    }
-    setState(() => _loading = true);
-    final deps = AppDependencies.of(context);
-    try {
-      await deps.auth.signInAsTchm(developerPersonnelNumber);
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Не удалось войти: $error')));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
+  final double size;
 
   @override
   Widget build(BuildContext context) {
-    final enteredNumber = _personnelNumber.text.trim();
-    final foundTchmName = tchmNameForPersonnelNumber(enteredNumber);
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [AppPalette.deep, AppPalette.deepLight, AppPalette.seed],
-          ),
+    return SizedBox(
+      width: size,
+      height: size,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(size * 0.22),
+        child: Image.asset(
+          'assets/brand/app_icon_1024.png',
+          fit: BoxFit.cover,
+          semanticLabel: 'Нормативы ТЧМ',
         ),
-        child: SafeArea(
+      ),
+    );
+  }
+}
+
+/// Тёмная подложка экранов входа: общий фон, знак и карточка.
+class _AuthScaffold extends StatelessWidget {
+  const _AuthScaffold({
+    required this.title,
+    required this.child,
+    this.subtitle,
+    this.onBack,
+    this.showMark = true,
+  });
+
+  final String title;
+  final String? subtitle;
+  final Widget child;
+  final VoidCallback? onBack;
+
+  /// На регистрации знак не показываем: форма длинная, и он только
+  /// отодвигает поля за край экрана.
+  final bool showMark;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // Экран стал светлым, поэтому значки статус-бара должны быть тёмными:
+      // светлые на светлом фоне не видны.
+      value: SystemUiOverlayStyle.dark.copyWith(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: AppPalette.background,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        backgroundColor: AppPalette.background,
+        body: SafeArea(
           child: Stack(
             children: [
-              Align(
-                alignment: Alignment.topRight,
-                child: IconButton(
-                  tooltip: 'Вход разработчика',
-                  onPressed: _loading ? null : _openDeveloperLogin,
-                  icon: Icon(
-                    Icons.settings_outlined,
-                    color: Colors.white.withValues(alpha: 0.7),
-                  ),
-                ),
-              ),
               Center(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
@@ -1388,56 +2131,32 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Container(
-                          width: 84,
-                          height: 84,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.12),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.25),
-                              width: 2,
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.train_outlined,
-                            size: 44,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
+                        if (showMark) ...[
+                          const Center(child: _AppMark()),
+                          const SizedBox(height: 16),
+                        ],
                         const Text(
-                          'ТЧМ',
+                          'ТЧМ · НОРМАТИВЫ · МАШИНИСТЫ',
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
-                            letterSpacing: 2,
+                            fontSize: 11,
+                            letterSpacing: 2.2,
+                            fontWeight: FontWeight.w600,
+                            color: AppPalette.textSecondary,
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Колонны и машинисты',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: Colors.white.withValues(alpha: 0.75),
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 26),
                         Container(
-                          padding: const EdgeInsets.all(20),
+                          padding: const EdgeInsets.fromLTRB(22, 18, 22, 24),
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(20),
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(color: AppPalette.border),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.18),
-                                blurRadius: 24,
-                                offset: const Offset(0, 12),
+                                color: Colors.black.withValues(alpha: 0.06),
+                                blurRadius: 18,
+                                offset: const Offset(0, 6),
                               ),
                             ],
                           ),
@@ -1446,26 +2165,15 @@ class _LoginScreenState extends State<LoginScreen> {
                             children: [
                               Row(
                                 children: [
-                                  if (_mode != null)
+                                  if (onBack != null)
                                     IconButton(
                                       tooltip: 'Назад',
-                                      onPressed: _loading
-                                          ? null
-                                          : () => setState(() {
-                                              _mode = null;
-                                              _password.clear();
-                                            }),
+                                      onPressed: onBack,
                                       icon: const Icon(Icons.arrow_back),
                                     ),
                                   Expanded(
                                     child: Text(
-                                      switch (_mode) {
-                                        null => 'Выберите способ входа',
-                                        _LoginMode.instructor =>
-                                          'Вход для инструктора',
-                                        _LoginMode.guest =>
-                                          'Вход для просмотра',
-                                      },
+                                      title,
                                       style: const TextStyle(
                                         fontSize: 17,
                                         fontWeight: FontWeight.w800,
@@ -1475,125 +2183,19 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ),
                                 ],
                               ),
-                              if (_mode != null) ...[
+                              if (subtitle != null) ...[
                                 const SizedBox(height: 4),
                                 Text(
-                                  _mode == _LoginMode.instructor
-                                      ? 'Введите табельный номер и пароль доступа'
-                                      : 'Введите пароль доступа',
+                                  subtitle!,
                                   style: const TextStyle(
                                     fontSize: 14,
+                                    height: 1.4,
                                     color: AppPalette.textSecondary,
                                   ),
                                 ),
                               ],
-                              const SizedBox(height: 20),
-                              if (_mode == null) ...[
-                                FilledButton.icon(
-                                  onPressed: () => setState(
-                                    () => _mode = _LoginMode.instructor,
-                                  ),
-                                  icon: const Icon(Icons.edit_note_outlined),
-                                  label: const Text('Войти как инструктор'),
-                                ),
-                                const SizedBox(height: 12),
-                                OutlinedButton.icon(
-                                  onPressed: () =>
-                                      setState(() => _mode = _LoginMode.guest),
-                                  icon: const Icon(Icons.visibility_outlined),
-                                  label: const Text('Войти как гость'),
-                                ),
-                              ] else ...[
-                                if (_mode == _LoginMode.instructor) ...[
-                                  _KeyboardTextField(
-                                    controller: _personnelNumber,
-                                    keyboardType: TextInputType.number,
-                                    textInputAction: TextInputAction.next,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Табельный номер',
-                                      prefixIcon: Icon(Icons.badge_outlined),
-                                    ),
-                                    onChanged: (_) => setState(() {}),
-                                    onSubmitted: (_) =>
-                                        _loading ? null : _signInAsTchm(),
-                                  ),
-                                  if (enteredNumber.isNotEmpty) ...[
-                                    const SizedBox(height: 8),
-                                    Row(
-                                      children: [
-                                        Icon(
-                                          foundTchmName == null
-                                              ? Icons.error_outline
-                                              : Icons.check_circle_outline,
-                                          size: 18,
-                                          color: foundTchmName == null
-                                              ? Theme.of(
-                                                  context,
-                                                ).colorScheme.error
-                                              : AppPalette.accent,
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Expanded(
-                                          child: Text(
-                                            foundTchmName ??
-                                                'Табельный номер не найден',
-                                            style: TextStyle(
-                                              color: foundTchmName == null
-                                                  ? Theme.of(
-                                                      context,
-                                                    ).colorScheme.error
-                                                  : AppPalette.accent,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                  const SizedBox(height: 12),
-                                ],
-                                _KeyboardTextField(
-                                  controller: _password,
-                                  obscureText: true,
-                                  textInputAction: TextInputAction.done,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Пароль доступа',
-                                    prefixIcon: Icon(Icons.lock_outline),
-                                  ),
-                                  onSubmitted: (_) {
-                                    if (_loading) return;
-                                    _mode == _LoginMode.guest
-                                        ? _signInAsGuest()
-                                        : _signInAsTchm();
-                                  },
-                                ),
-                                const SizedBox(height: 16),
-                                FilledButton.icon(
-                                  onPressed: _loading
-                                      ? null
-                                      : (_mode == _LoginMode.guest
-                                            ? _signInAsGuest
-                                            : _signInAsTchm),
-                                  icon: _loading
-                                      ? const SizedBox.square(
-                                          dimension: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.white,
-                                          ),
-                                        )
-                                      : Icon(
-                                          _mode == _LoginMode.guest
-                                              ? Icons.visibility_outlined
-                                              : Icons.login,
-                                        ),
-                                  label: Text(
-                                    _mode == _LoginMode.guest
-                                        ? 'Войти как гость'
-                                        : 'Войти',
-                                  ),
-                                ),
-                              ],
+                              const SizedBox(height: 18),
+                              child,
                             ],
                           ),
                         ),
@@ -1610,19 +2212,2596 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-enum _LoginMode { instructor, guest }
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
 
-String _normalizeAccessPassword(String value) {
-  return value
-      .trim()
-      .toUpperCase()
-      .replaceAll('TCH', 'ТЧ')
-      .replaceAll('TC', 'ТЧ')
-      .replaceAll(' ', '')
-      .replaceAll('−', '-')
-      .replaceAll('–', '-')
-      .replaceAll('—', '-')
-      .replaceAll('-', '');
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  var _loading = false;
+  var _obscure = true;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  void _showError(Object error) {
+    if (!mounted) return;
+    final text = error is AuthException || error is InviteException
+        ? '$error'
+        : 'Не удалось войти: $error';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _signIn() async {
+    if (_loading) return;
+    final email = _email.text.trim();
+    if (email.isEmpty || _password.text.isEmpty) {
+      _showError(const AuthException('Введите почту и пароль.'));
+      return;
+    }
+    setState(() => _loading = true);
+    final deps = AppDependencies.of(context);
+    try {
+      await deps.auth.signIn(email: email, password: _password.text);
+    } catch (error) {
+      _showError(error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _openRegistration() async {
+    if (_loading) return;
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const RegisterScreen()));
+  }
+
+  /// Вход через Яндекс ID.
+  ///
+  /// Незнакомого человека сервер не разворачивает, а выдаёт пропуск на
+  /// короткую форму: почта и пароль уже не нужны, но депо, табельный и ключ
+  /// спрашиваются так же, как при обычной регистрации.
+  Future<void> _signInWithYandex() async {
+    final auth = AppDependencies.of(context).auth;
+    if (auth is! ApiAppAuth) return;
+    setState(() => _loading = true);
+    try {
+      final ticket = await auth.authenticateWithYandex();
+      if (!mounted) return;
+      if (ticket.isEmpty) return; // вошёл, экран сменит AuthGate
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => YandexSignUpScreen(ticket: ticket),
+        ),
+      );
+    } on AuthException catch (error) {
+      _showError('$error');
+    } catch (error) {
+      _showError('Не удалось войти через Яндекс: $error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _resetPassword() async {
+    final email = _email.text.trim();
+    if (email.isEmpty) {
+      _showError(
+        const AuthException(
+          'Введите почту — на неё придёт ссылка для смены пароля.',
+        ),
+      );
+      return;
+    }
+    setState(() => _loading = true);
+    final deps = AppDependencies.of(context);
+    try {
+      await deps.auth.sendPasswordReset(email);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Письмо для смены пароля отправлено на $email')),
+      );
+    } catch (error) {
+      _showError(error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        _AuthScaffold(
+          title: 'Вход',
+          subtitle:
+              'Войдите по почте, на которую регистрировались. Если '
+              'учётной записи ещё нет — зарегистрируйтесь по ключу от '
+              'руководителя.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _KeyboardTextField(
+                controller: _email,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Почта',
+                  prefixIcon: Icon(Icons.alternate_email),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _KeyboardTextField(
+                controller: _password,
+                obscureText: _obscure,
+                textInputAction: TextInputAction.done,
+                decoration: InputDecoration(
+                  labelText: 'Пароль',
+                  prefixIcon: const Icon(Icons.lock_outline),
+                  suffixIcon: IconButton(
+                    tooltip: _obscure ? 'Показать пароль' : 'Скрыть пароль',
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                    icon: Icon(
+                      _obscure
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                    ),
+                  ),
+                ),
+                onSubmitted: (_) => _signIn(),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: _loading ? null : _resetPassword,
+                  child: const Text('Забыли пароль?'),
+                ),
+              ),
+              const SizedBox(height: 4),
+              FilledButton.icon(
+                style: depotPrimaryButtonStyle(),
+                onPressed: _loading ? null : _signIn,
+                icon: _loading
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.login),
+                label: const Text('Войти'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _loading ? null : _openRegistration,
+                icon: const Icon(Icons.person_add_alt),
+                label: const Text('Зарегистрироваться'),
+              ),
+              // Кнопка есть только на новом сервере: у Firebase входа через
+              // Яндекс нет и быть не может.
+              if (AppDependencies.of(context).auth is ApiAppAuth) ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: _loading ? null : _signInWithYandex,
+                  icon: const Text(
+                    'Я',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFFFC3F1D),
+                    ),
+                  ),
+                  label: const Text('Войти с Яндекс ID'),
+                ),
+              ],
+            ],
+          ),
+        ),
+
+        // В API обычный вход остаётся доступен и при техработах:
+        // разработчик входит по почте, сервер проверяет его роль.
+        StreamBuilder<AppLock>(
+          stream: AppDependencies.of(context).repository.watchLock(),
+          builder: (context, lockSnapshot) {
+            final lock = lockSnapshot.data ?? const AppLock();
+            if (AppDependencies.of(context).auth is ApiAppAuth ||
+                !lock.readsBlocked) {
+              return const SizedBox.shrink();
+            }
+            return Positioned.fill(
+              child: Container(
+                color: AppPalette.background,
+                alignment: Alignment.center,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const _AppMark(size: 120),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Ведутся технические работы',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: AppPalette.textPrimary,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Доступ к приложению временно приостановлен '
+                      'разработчиком. Данные сохранены. Попробуйте позже.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        height: 1.45,
+                        color: AppPalette.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// Экран для профиля без депо: работать не с чем, но и ошибку показывать
+/// незачем — человеку нужно понятное объяснение и выход.
+class DepotMissingScreen extends StatelessWidget {
+  const DepotMissingScreen({super.key, required this.user});
+
+  final AppUser user;
+
+  @override
+  Widget build(BuildContext context) {
+    final deps = AppDependencies.of(context);
+    return _AuthScaffold(
+      title: 'Депо не указано',
+      subtitle:
+          'Учётная запись есть, но она не привязана к депо, поэтому '
+          'данные не открываются.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppPalette.surfaceTint,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: const Text(
+              'Так бывает у записей, созданных до разделения по депо. '
+              'Обратитесь к руководителю подразделения — он привяжет вас '
+              'к депо, либо зарегистрируйтесь заново по ключу.',
+              style: TextStyle(
+                fontSize: 13.5,
+                height: 1.4,
+                color: AppPalette.textSecondary,
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          FilledButton.icon(
+            style: depotPrimaryButtonStyle(),
+            onPressed: () => deps.auth.signOut(),
+            icon: const Icon(Icons.logout),
+            label: const Text('Выйти'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Цвета линий метрополитена. В списке депо это единственное, что отличает
+/// строки друг от друга с одного взгляда: линии люди помнят по цветам схемы,
+/// а не по названиям.
+abstract final class MetroLineColors {
+  static const _byLine = <String, Color>{
+    'Сокольническая': Color(0xFFEF161E),
+    'Замоскворецкая': Color(0xFF2DBE2C),
+    'Арбатско-Покровская': Color(0xFF0078BE),
+    'Кольцевая': Color(0xFF894E35),
+    'Калужско-Рижская': Color(0xFFF58631),
+    'Таганско-Краснопресненская': Color(0xFF943D8F),
+    'Серпуховско-Тимирязевская': Color(0xFF9A9A9A),
+    'Бутовская': Color(0xFFBAC8E8),
+    'Филёвская': Color(0xFF00BFFF),
+    'Калининская': Color(0xFFFFCB31),
+    'Солнцевская': Color(0xFFFFCB31),
+    'Люблинско-Дмитровская': Color(0xFF9ACD32),
+    'Некрасовская': Color(0xFFDE64A1),
+    'Большая кольцевая': Color(0xFF82C0C0),
+    'Троицкая': Color(0xFF1C8C4C),
+    // Графитовый — цвет, выбранный голосованием на «Активном гражданине».
+    // Взят темнее серого Серпуховско-Тимирязевской, иначе две серые полосы
+    // в списке не различить.
+    'Рублёво-Архангельская': Color(0xFF4B5157),
+  };
+
+  /// Депо с неуточнённой линией получает нейтральный серый: пустое место в
+  /// колонке полос сломало бы строй списка.
+  static Color of(String line) => _byLine[line] ?? DepotBrand.silverMuted;
+}
+
+/// Открывает список депо отдельным листом и возвращает выбранное.
+///
+/// Раньше выбор жил в выпадающем списке: белое меню поверх белой карточки,
+/// строки в два этажа и никакого поиска по двум десяткам депо. Лист даёт
+/// поиск, цветные полосы линий и место под нормальные строки.
+Future<Depot?> showDepotPicker(BuildContext context, Depot? selected) {
+  return showModalBottomSheet<Depot>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Colors.transparent,
+    barrierColor: Colors.black.withValues(alpha: 0.42),
+    builder: (_) => _DepotPickerSheet(selected: selected),
+  );
+}
+
+class _DepotPickerSheet extends StatefulWidget {
+  const _DepotPickerSheet({this.selected});
+
+  final Depot? selected;
+
+  @override
+  State<_DepotPickerSheet> createState() => _DepotPickerSheetState();
+}
+
+class _DepotPickerSheetState extends State<_DepotPickerSheet> {
+  final _query = TextEditingController();
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  List<Depot> get _visible {
+    final query = _query.text.trim().toLowerCase();
+    if (query.isEmpty) return MoscowDepots.byName;
+    return [
+      for (final depot in MoscowDepots.byName)
+        if (depot.searchText.contains(query)) depot,
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final visible = _visible;
+    return Padding(
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+      child: ConstrainedBox(
+        // Лист не занимает экран целиком: полоска фона сверху показывает,
+        // что под ним осталась форма регистрации.
+        constraints: BoxConstraints(maxHeight: media.size.height * 0.86),
+        child: Material(
+          color: Colors.white,
+          clipBehavior: Clip.antiAlias,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 44,
+                  height: 5,
+                  margin: const EdgeInsets.only(top: 10, bottom: 8),
+                  decoration: BoxDecoration(
+                    color: AppPalette.border,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 8, 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Выберите депо',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: AppPalette.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Московский метрополитен · '
+                            '${MoscowDepots.all.length} штатов',
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: AppPalette.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Закрыть',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                      color: AppPalette.textSecondary,
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                child: _KeyboardTextField(
+                  controller: _query,
+                  textInputAction: TextInputAction.search,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: 'Название, номер ТЧ или линия',
+                    hintStyle: const TextStyle(
+                      color: AppPalette.textSecondary,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    prefixIcon: const Icon(Icons.search, size: 21),
+                    suffixIcon: _query.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Очистить',
+                            icon: const Icon(Icons.close, size: 18),
+                            color: AppPalette.textSecondary,
+                            onPressed: () {
+                              _query.clear();
+                              setState(() {});
+                            },
+                          ),
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppPalette.surfaceTint,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                    border: _searchBorder(AppPalette.surfaceTint),
+                    enabledBorder: _searchBorder(AppPalette.surfaceTint),
+                    focusedBorder: _searchBorder(AppPalette.accent),
+                  ),
+                ),
+              ),
+              const Divider(height: 1, thickness: 1, color: AppPalette.border),
+              Flexible(
+                child: visible.isEmpty
+                    ? const _DepotPickerEmpty()
+                    : ListView.separated(
+                        shrinkWrap: true,
+                        // Жест-панель Android перекрывает низ листа: без её
+                        // высоты последнее депо в списке наполовину под ней.
+                        padding: EdgeInsets.only(
+                          bottom: 12 + media.padding.bottom,
+                        ),
+                        itemCount: visible.length,
+                        separatorBuilder: (_, _) => const Divider(
+                          height: 1,
+                          thickness: 1,
+                          // Разделитель начинается там же, где название:
+                          // колонка полос остаётся сплошной.
+                          indent: 34,
+                          endIndent: 16,
+                          color: AppPalette.border,
+                        ),
+                        itemBuilder: (context, index) {
+                          final depot = visible[index];
+                          return _DepotPickerTile(
+                            depot: depot,
+                            selected: depot.id == widget.selected?.id,
+                            onTap: () => Navigator.of(context).pop(depot),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static OutlineInputBorder _searchBorder(Color color) => OutlineInputBorder(
+    borderRadius: BorderRadius.circular(14),
+    borderSide: BorderSide(
+      color: color,
+      width: color == AppPalette.accent ? 1.6 : 1,
+    ),
+  );
+}
+
+class _DepotPickerEmpty extends StatelessWidget {
+  const _DepotPickerEmpty();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(24, 34, 24, 42),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.search_off, size: 34, color: DepotBrand.silverMuted),
+          SizedBox(height: 10),
+          Text(
+            'Такого депо нет',
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: AppPalette.textPrimary,
+            ),
+          ),
+          SizedBox(height: 4),
+          Text(
+            'Проверьте название или номер ТЧ.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: AppPalette.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Строка списка: полоса линии, номер ТЧ, название, линия.
+class _DepotPickerTile extends StatelessWidget {
+  const _DepotPickerTile({
+    required this.depot,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final Depot depot;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        color: selected
+            ? DepotBrand.redInk.withValues(alpha: 0.05)
+            : Colors.transparent,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Row(
+          children: [
+            Container(
+              width: 4,
+              height: 38,
+              decoration: BoxDecoration(
+                color: MetroLineColors.of(depot.line),
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    depot.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                      color: selected
+                          ? DepotBrand.redInk
+                          : AppPalette.textPrimary,
+                    ),
+                  ),
+                  // У депо без уточнённой линии второй строки быть не должно —
+                  // иначе в списке висит одинокое «линия».
+                  if (depot.line.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      '${depot.line} линия',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: AppPalette.textSecondary,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (selected)
+              const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child: Icon(
+                  Icons.check_circle,
+                  size: 21,
+                  color: DepotBrand.redInk,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Поле выбора депо в форме: показывает выбранное и открывает лист.
+class _DepotField extends StatelessWidget {
+  const _DepotField({
+    required this.depot,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final Depot? depot;
+  final ValueChanged<Depot> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final depot = this.depot;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: enabled
+            ? () async {
+                final picked = await showDepotPicker(context, depot);
+                if (picked != null) onChanged(picked);
+              }
+            : null,
+        child: InputDecorator(
+          isEmpty: depot == null,
+          decoration: InputDecoration(
+            labelText: 'Депо',
+            hintText: 'Выберите депо',
+            prefixIcon: const Icon(Icons.train_outlined),
+            suffixIcon: const Icon(
+              Icons.expand_more,
+              color: AppPalette.textSecondary,
+            ),
+            contentPadding: const EdgeInsets.symmetric(vertical: 16),
+          ),
+          child: depot == null
+              ? const SizedBox(height: 22)
+              : Row(
+                  children: [
+                    Container(
+                      width: 4,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: MetroLineColors.of(depot.line),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        depot.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w600,
+                          color: AppPalette.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Галочка согласия под формой регистрации.
+///
+/// Названия документов — не просто текст, а ссылки: согласие, которое
+/// невозможно прочитать, согласием не является.
+class _ConsentCheckbox extends StatelessWidget {
+  const _ConsentCheckbox({
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final bool enabled;
+
+  void _open(BuildContext context, String title, String body) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => LegalTextScreen(title: title, body: body),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const linkStyle = TextStyle(
+      fontSize: 12.5,
+      height: 1.4,
+      color: DepotBrand.redInk,
+      fontWeight: FontWeight.w700,
+      decoration: TextDecoration.underline,
+      decorationColor: DepotBrand.redInk,
+    );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 26,
+          height: 26,
+          child: Checkbox(
+            value: value,
+            activeColor: DepotBrand.redInk,
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            onChanged: enabled ? (next) => onChanged(next ?? false) : null,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Text.rich(
+              TextSpan(
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  height: 1.4,
+                  color: AppPalette.textSecondary,
+                ),
+                children: [
+                  const TextSpan(text: 'Прочитал, '),
+                  TextSpan(
+                    text: 'какие данные хранит приложение',
+                    style: linkStyle,
+                    recognizer: TapGestureRecognizer()
+                      ..onTap = () => _open(
+                        context,
+                        personalDataConsentTitle,
+                        personalDataConsentText,
+                      ),
+                  ),
+                  const TextSpan(text: ' и '),
+                  TextSpan(
+                    text: 'кто их видит',
+                    style: linkStyle,
+                    recognizer: TapGestureRecognizer()
+                      ..onTap = () => _open(
+                        context,
+                        privacyPolicyTitle,
+                        privacyPolicyText,
+                      ),
+                  ),
+                  const TextSpan(text: '. Согласен на их обработку.'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Экран с текстом документа. Отдельной страницей, а не всплывающим окном:
+/// текст длинный, и его должно быть удобно листать и читать целиком.
+class LegalTextScreen extends StatelessWidget {
+  const LegalTextScreen({super.key, required this.title, required this.body});
+
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Обычный Text, а не SelectableText: на выделяемом тексте палец
+            // начинает выделение вместо прокрутки, и страница уезжает вверх
+            // вслед за ним — читать длинный текст становится невозможно.
+            Text(
+              body.trim(),
+              style: const TextStyle(
+                fontSize: 14,
+                height: 1.55,
+                color: AppPalette.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Редакция от $legalDocsVersion',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppPalette.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Короткая форма регистрации после входа через Яндекс ID.
+///
+/// Почты и пароля здесь нет: их заменил Яндекс, и он же подтвердил адрес.
+/// Осталось то, что Яндекс знать не может, — депо, фамилия, табельный и
+/// ключ руководителя. Послаблений нет: без ключа внутрь не пускают так же,
+/// как и при обычной регистрации.
+class YandexSignUpScreen extends StatefulWidget {
+  const YandexSignUpScreen({super.key, required this.ticket});
+
+  /// Пропуск от сервера, живёт десять минут.
+  final String ticket;
+
+  @override
+  State<YandexSignUpScreen> createState() => _YandexSignUpScreenState();
+}
+
+class _YandexSignUpScreenState extends State<YandexSignUpScreen> {
+  final _displayName = TextEditingController();
+  final _personnelNumber = TextEditingController();
+  final _inviteCode = TextEditingController();
+
+  Depot? _depot;
+  var _role = UserRole.tchm;
+  var _loading = false;
+  var _consent = false;
+
+  bool get _needsPersonnelNumber => _role != UserRole.viewer;
+
+  @override
+  void dispose() {
+    _displayName.dispose();
+    _personnelNumber.dispose();
+    _inviteCode.dispose();
+    super.dispose();
+  }
+
+  String? _validate() {
+    if (_depot == null) return 'Выберите депо.';
+    if (_displayName.text.trim().length < 3) {
+      return 'Укажите фамилию и инициалы — например, Королев М.А.';
+    }
+    if (_needsPersonnelNumber && _personnelNumber.text.trim().isEmpty) {
+      return 'Введите табельный номер.';
+    }
+    if (_inviteCode.text.trim().isEmpty) {
+      return 'Введите ключ, выданный руководителем подразделения.';
+    }
+    if (!_consent) {
+      return 'Отметьте согласие на обработку данных — без него '
+          'зарегистрировать нельзя.';
+    }
+    return null;
+  }
+
+  Future<void> _submit() async {
+    if (_loading) return;
+    final problem = _validate();
+    if (problem != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(problem)));
+      return;
+    }
+    final auth = AppDependencies.of(context).auth;
+    if (auth is! ApiAppAuth) return;
+    setState(() => _loading = true);
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    try {
+      await auth.completeYandexSignUp(
+        ticket: widget.ticket,
+        depotId: _depot!.id,
+        displayName: _displayName.text.trim(),
+        personnelNumber: _needsPersonnelNumber
+            ? _personnelNumber.text.trim()
+            : '',
+        role: _role,
+        inviteCode: _inviteCode.text,
+      );
+      // Дальше человека ведёт AuthGate: он уже вошёл, письма ждать не надо.
+      navigator.pop();
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthScaffold(
+      title: 'Ещё немного',
+      subtitle: 'Почту подтвердил Яндекс. Осталось указать, кто вы и в каком '
+          'депо — и ввести ключ руководителя.',
+      showMark: false,
+      onBack: _loading ? null : () => Navigator.of(context).pop(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SegmentedButton<UserRole>(
+            segments: const [
+              ButtonSegment(
+                value: UserRole.tchm,
+                label: Text('ТЧМ'),
+                icon: Icon(Icons.edit_note_outlined),
+              ),
+              ButtonSegment(
+                value: UserRole.viewer,
+                label: Text('Гость'),
+                icon: Icon(Icons.visibility_outlined),
+              ),
+            ],
+            selected: {_role},
+            showSelectedIcon: false,
+            style: ButtonStyle(
+              backgroundColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? DepotBrand.redInk
+                    : null,
+              ),
+              foregroundColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? Colors.white
+                    : AppPalette.textPrimary,
+              ),
+            ),
+            onSelectionChanged: _loading
+                ? null
+                : (selection) => setState(() => _role = selection.first),
+          ),
+          const SizedBox(height: 14),
+          _DepotField(
+            depot: _depot,
+            enabled: !_loading,
+            onChanged: (depot) => setState(() => _depot = depot),
+          ),
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _displayName,
+            textInputAction: TextInputAction.next,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Фамилия И.О.',
+              hintText: 'Королев М.А.',
+              prefixIcon: Icon(Icons.person_outline),
+            ),
+          ),
+          if (_needsPersonnelNumber) ...[
+            const SizedBox(height: 12),
+            _KeyboardTextField(
+              controller: _personnelNumber,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'Табельный номер',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _inviteCode,
+            textCapitalization: TextCapitalization.characters,
+            textInputAction: TextInputAction.done,
+            style: const TextStyle(
+              fontFeatures: [FontFeature.tabularFigures()],
+              letterSpacing: 1.1,
+            ),
+            decoration: const InputDecoration(
+              labelText: 'Ключ',
+              hintText: 'TCH16-XXXX-XXXX-XXXX',
+              prefixIcon: Icon(Icons.vpn_key_outlined),
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          const SizedBox(height: 16),
+          _ConsentCheckbox(
+            value: _consent,
+            enabled: !_loading,
+            onChanged: (value) => setState(() => _consent = value),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            style: depotPrimaryButtonStyle(),
+            onPressed: _loading ? null : _submit,
+            icon: _loading
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.check),
+            label: const Text('Готово'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({super.key});
+
+  @override
+  State<RegisterScreen> createState() => _RegisterScreenState();
+}
+
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _displayName = TextEditingController();
+  final _personnelNumber = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _passwordRepeat = TextEditingController();
+  final _inviteCode = TextEditingController();
+
+  Depot? _depot;
+  var _role = UserRole.tchm;
+  var _loading = false;
+  var _obscure = true;
+
+  /// Согласие на обработку персональных данных. Отдельным действием, а не
+  /// «продолжая, вы соглашаетесь»: согласие должно быть активным, и без
+  /// него регистрация не идёт.
+  var _consent = false;
+
+  /// Гостю табельный номер ни к чему: он ничего не редактирует.
+  bool get _needsPersonnelNumber => _role != UserRole.viewer;
+
+  /// Показываем расхождение сразу, а не после нажатия кнопки — но молчим,
+  /// пока человек не начал вводить повтор.
+  String? get _repeatError {
+    if (_passwordRepeat.text.isEmpty) return null;
+    if (_passwordRepeat.text == _password.text) return null;
+    return 'Пароли не совпадают';
+  }
+
+  @override
+  void dispose() {
+    _displayName.dispose();
+    _personnelNumber.dispose();
+    _email.dispose();
+    _password.dispose();
+    _passwordRepeat.dispose();
+    _inviteCode.dispose();
+    super.dispose();
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Возвращает текст ошибки или null, если всё заполнено.
+  String? _validate() {
+    if (_depot == null) return 'Выберите депо.';
+    if (_displayName.text.trim().length < 3) {
+      return 'Укажите фамилию и инициалы — например, Королев М.А.';
+    }
+    if (_needsPersonnelNumber && _personnelNumber.text.trim().isEmpty) {
+      return 'Введите табельный номер.';
+    }
+    final email = _email.text.trim();
+    if (!email.contains('@') || !email.contains('.')) {
+      return 'Проверьте адрес почты.';
+    }
+    if (!emailDomainAllowed(email)) {
+      return 'Регистрация только со служебной почты '
+          '(${allowedEmailDomains.join(', ')}).';
+    }
+    if (_password.text.length < 8) {
+      return 'Пароль должен быть не короче 8 знаков.';
+    }
+    if (_passwordRepeat.text != _password.text) {
+      return 'Пароли не совпадают — проверьте оба поля.';
+    }
+    if (_inviteCode.text.trim().isEmpty) {
+      return 'Введите ключ, выданный руководителем подразделения.';
+    }
+    if (!_consent) {
+      return 'Отметьте согласие на обработку данных — без него '
+          'зарегистрировать нельзя.';
+    }
+    return null;
+  }
+
+  Future<void> _register() async {
+    if (_loading) return;
+    final problem = _validate();
+    if (problem != null) {
+      _showError(problem);
+      return;
+    }
+    setState(() => _loading = true);
+    final deps = AppDependencies.of(context);
+    final navigator = Navigator.of(context);
+    try {
+      await deps.auth.register(
+        RegistrationRequest(
+          depotId: _depot!.id,
+          displayName: _displayName.text.trim(),
+          personnelNumber: _needsPersonnelNumber
+              ? _personnelNumber.text.trim()
+              : '',
+          email: _email.text.trim(),
+          password: _password.text,
+          inviteCode: _inviteCode.text,
+          role: _role,
+        ),
+      );
+      if (deps.auth is ApiAppAuth) {
+        // На новом сервере регистрация не пускает внутрь: пока человек не
+        // откроет ссылку из письма, входить нечем. Молча возвращать его на
+        // экран входа — значит оставить в недоумении.
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Проверьте почту'),
+            content: Text(
+              'Отправили письмо на ${_email.text.trim()}. Откройте ссылку '
+              'из него — после этого можно войти.\n\n'
+              'Письмо идёт минуту-другую. Если не пришло — посмотрите в '
+              'спаме или попросите его заново на экране входа.',
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Понятно'),
+              ),
+            ],
+          ),
+        );
+      }
+      // Дальше человека ведёт AuthGate: профиль создан со статусом
+      // «ожидает», поэтому откроется экран подтверждения почты.
+      navigator.pop();
+    } on InviteException catch (error) {
+      _showError('$error');
+    } on AuthException catch (error) {
+      _showError('$error');
+    } catch (error) {
+      _showError('Не удалось зарегистрироваться: $error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthScaffold(
+      title: 'Регистрация',
+      showMark: false,
+      onBack: _loading ? null : () => Navigator.of(context).pop(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Кем регистрируетесь',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: AppPalette.textSecondary,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SegmentedButton<UserRole>(
+            segments: const [
+              ButtonSegment(
+                value: UserRole.tchm,
+                label: Text('ТЧМ'),
+                icon: Icon(Icons.edit_note_outlined),
+              ),
+              ButtonSegment(
+                value: UserRole.viewer,
+                label: Text('Гость'),
+                icon: Icon(Icons.visibility_outlined),
+              ),
+            ],
+            selected: {_role},
+            showSelectedIcon: false,
+            style: ButtonStyle(
+              backgroundColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? DepotBrand.redInk
+                    : null,
+              ),
+              foregroundColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? Colors.white
+                    : AppPalette.textPrimary,
+              ),
+            ),
+            onSelectionChanged: _loading
+                ? null
+                : (selection) => setState(() => _role = selection.first),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _role == UserRole.viewer
+                ? 'Гость только просматривает данные.'
+                : 'ТЧМ ведёт данные машинистов своих колонн.',
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.3,
+              color: AppPalette.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 14),
+          _DepotField(
+            depot: _depot,
+            enabled: !_loading,
+            onChanged: (depot) => setState(() => _depot = depot),
+          ),
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _displayName,
+            textInputAction: TextInputAction.next,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Фамилия И.О.',
+              hintText: 'Королев М.А.',
+              prefixIcon: Icon(Icons.person_outline),
+            ),
+          ),
+          if (_needsPersonnelNumber) ...[
+            const SizedBox(height: 12),
+            _KeyboardTextField(
+              controller: _personnelNumber,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'Табельный номер',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _email,
+            keyboardType: TextInputType.emailAddress,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: 'Почта',
+              prefixIcon: Icon(Icons.alternate_email),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _password,
+            obscureText: _obscure,
+            textInputAction: TextInputAction.next,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: 'Пароль',
+              helperText: 'Не короче 8 знаков',
+              prefixIcon: const Icon(Icons.lock_outline),
+              suffixIcon: IconButton(
+                tooltip: _obscure ? 'Показать пароль' : 'Скрыть пароль',
+                onPressed: () => setState(() => _obscure = !_obscure),
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _passwordRepeat,
+            obscureText: _obscure,
+            textInputAction: TextInputAction.next,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: 'Повторите пароль',
+              errorText: _repeatError,
+              prefixIcon: const Icon(Icons.lock_outline),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _KeyboardTextField(
+            controller: _inviteCode,
+            textCapitalization: TextCapitalization.characters,
+            textInputAction: TextInputAction.done,
+            style: const TextStyle(
+              fontFeatures: [FontFeature.tabularFigures()],
+              letterSpacing: 1.1,
+            ),
+            decoration: const InputDecoration(
+              labelText: 'Ключ',
+              hintText: 'TCH16-XXXX-XXXX-XXXX',
+              prefixIcon: Icon(Icons.vpn_key_outlined),
+            ),
+            onSubmitted: (_) => _register(),
+          ),
+          const SizedBox(height: 16),
+          _ConsentCheckbox(
+            value: _consent,
+            enabled: !_loading,
+            onChanged: (value) => setState(() => _consent = value),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            style: depotPrimaryButtonStyle(),
+            onPressed: _loading ? null : _register,
+            icon: _loading
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.person_add_alt),
+            label: const Text('Зарегистрироваться'),
+          ),
+          const SizedBox(height: 16),
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.info_outline,
+                size: 15,
+                color: AppPalette.textSecondary,
+              ),
+              SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'Ключ выдаёт руководитель подразделения.',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    height: 1.35,
+                    color: AppPalette.textSecondary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Экран между регистрацией и работой: ждём подтверждения почты.
+class AwaitingApprovalScreen extends StatefulWidget {
+  const AwaitingApprovalScreen({super.key, required this.user});
+
+  final AppUser user;
+
+  @override
+  State<AwaitingApprovalScreen> createState() => _AwaitingApprovalScreenState();
+}
+
+class _AwaitingApprovalScreenState extends State<AwaitingApprovalScreen> {
+  var _loading = false;
+
+  Future<void> _check() async {
+    setState(() => _loading = true);
+    final deps = AppDependencies.of(context);
+    try {
+      final verified = await deps.auth.refreshVerification();
+      if (!mounted) return;
+      if (!verified) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Почта пока не подтверждена. Проверьте письмо.'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _resend() async {
+    final deps = AppDependencies.of(context);
+    try {
+      await deps.auth.resendVerification();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Письмо отправлено на ${widget.user.email}')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final deps = AppDependencies.of(context);
+    return _AuthScaffold(
+      title: 'Подтвердите почту',
+      subtitle:
+          'Мы отправили письмо на ${widget.user.email}. Перейдите по '
+          'ссылке из письма и вернитесь сюда.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppPalette.surfaceTint,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _SummaryRow(label: 'Депо', value: widget.user.depotTitle),
+                _SummaryRow(label: 'ФИО', value: widget.user.displayName),
+                _SummaryRow(
+                  label: 'Табельный',
+                  value: widget.user.personnelNumber ?? '—',
+                ),
+                _SummaryRow(label: 'Роль', value: widget.user.role.title),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          FilledButton.icon(
+            style: depotPrimaryButtonStyle(),
+            onPressed: _loading ? null : _check,
+            icon: _loading
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.refresh),
+            label: const Text('Я подтвердил почту'),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _loading ? null : _resend,
+            icon: const Icon(Icons.mail_outline),
+            label: const Text('Отправить письмо ещё раз'),
+          ),
+          const SizedBox(height: 4),
+          TextButton(
+            onPressed: () => deps.auth.signOut(),
+            child: const Text('Выйти'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Депо без колонн: объясняем, что делать, и даём кнопку тому, кто может.
+class _EmptyColumnsCard extends StatelessWidget {
+  const _EmptyColumnsCard({required this.canCreate, required this.onCreate});
+
+  final bool canCreate;
+  final VoidCallback onCreate;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 40),
+      child: Column(
+        children: [
+          const Icon(
+            Icons.view_column_outlined,
+            size: 52,
+            color: AppPalette.textSecondary,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'В депо ещё нет колонн',
+            textAlign: TextAlign.center,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              canCreate
+                  ? 'Создайте свою колонну — укажите её номер, ТЧМ подставится '
+                        'из вашего профиля.'
+                  : 'Колонны заводит ТЧМ. Как только он их создаст, они '
+                        'появятся здесь.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                height: 1.4,
+                color: AppPalette.textSecondary,
+              ),
+            ),
+          ),
+          if (canCreate) ...[
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              style: depotPrimaryButtonStyle(),
+              onPressed: onCreate,
+              icon: const Icon(Icons.add),
+              label: const Text('Создать колонну'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Создание колонны: номер вводит ТЧМ, всё остальное подставляется само.
+class _CreateColumnDialog extends StatefulWidget {
+  const _CreateColumnDialog({required this.takenNumbers});
+
+  final Set<int> takenNumbers;
+
+  @override
+  State<_CreateColumnDialog> createState() => _CreateColumnDialogState();
+}
+
+class _CreateColumnDialogState extends State<_CreateColumnDialog> {
+  final _number = TextEditingController();
+
+  @override
+  void dispose() {
+    _number.dispose();
+    super.dispose();
+  }
+
+  String? get _error {
+    final text = _number.text.trim();
+    if (text.isEmpty) return null;
+    final value = int.tryParse(text);
+    if (value == null) return 'Номер — это число';
+    if (value < 1 || value > 99) return 'Номер от 1 до 99';
+    if (widget.takenNumbers.contains(value)) {
+      return 'Колонна №$value уже есть';
+    }
+    return null;
+  }
+
+  bool get _canSubmit {
+    final value = int.tryParse(_number.text.trim());
+    return value != null && _error == null;
+  }
+
+  void _submit() {
+    if (!_canSubmit) return;
+    Navigator.of(context).pop(int.parse(_number.text.trim()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Новая колонна'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _KeyboardTextField(
+            controller: _number,
+            keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              labelText: 'Номер колонны',
+              errorText: _error,
+              prefixIcon: const Icon(Icons.tag),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'ТЧМ колонны — вы. Подпись подставится из вашего профиля.',
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.35,
+              color: AppPalette.textSecondary,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          style: depotPrimaryButtonStyle(),
+          onPressed: _canSubmit ? _submit : null,
+          child: const Text('Создать'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SummaryRow extends StatelessWidget {
+  const _SummaryRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppPalette.textSecondary,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+                color: AppPalette.textPrimary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Сводка по всем депо. Экран только для разработчика: он один работает
+/// поверх депо, у остальных репозиторий отфильтрован своим и все числа здесь
+/// сошлись бы к одной строке.
+///
+/// Раньше данные всех депо приходили разработчику одним плоским списком
+/// колонн, отсортированным по номеру: колонна №1 Митина и №1 Сокола стояли
+/// рядом и ничем не отличались. Здесь они наконец разложены по депо.
+class DepotOverviewScreen extends StatelessWidget {
+  const DepotOverviewScreen({super.key, required this.user});
+
+  final AppUser user;
+
+  @override
+  Widget build(BuildContext context) {
+    final deps = AppDependencies.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Депо'),
+        actions: [
+          if (user.role.canManageDatabaseLock)
+            StreamBuilder<AppLock>(
+              stream: deps.repository.watchLock(),
+              builder: (context, lockSnapshot) {
+                final lock = lockSnapshot.data ?? const AppLock();
+                return IconButton(
+                  tooltip: 'Режим обслуживания',
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => ServiceLockDialog(user: user, lock: lock),
+                  ),
+                  icon: Icon(
+                    lock.isActive ? Icons.lock_outline : Icons.lock_open_outlined,
+                    color: lock.isActive ? const Color(0xFFFFD166) : null,
+                  ),
+                );
+              },
+            ),
+          IconButton(
+            tooltip: 'Выйти',
+            onPressed: deps.auth.signOut,
+            icon: const Icon(Icons.logout),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      body: StreamBuilder<List<ColumnGroup>>(
+        stream: deps.repository.watchColumns(),
+        builder: (context, columnsSnapshot) {
+          return StreamBuilder<List<Machinist>>(
+            stream: deps.repository.watchMachinists(),
+            builder: (context, machinistsSnapshot) {
+              return StreamBuilder<List<AppUser>>(
+                stream: deps.repository.watchUsers(),
+                builder: (context, usersSnapshot) {
+                  final waiting =
+                      columnsSnapshot.connectionState ==
+                          ConnectionState.waiting ||
+                      machinistsSnapshot.connectionState ==
+                          ConnectionState.waiting ||
+                      usersSnapshot.connectionState == ConnectionState.waiting;
+                  if (waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  final rows = _DepotStats.build(
+                    columns: columnsSnapshot.data ?? const <ColumnGroup>[],
+                    machinists: machinistsSnapshot.data ?? const <Machinist>[],
+                    users: usersSnapshot.data ?? const <AppUser>[],
+                  );
+                  return _DepotOverviewList(rows: rows, user: user);
+                },
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Числа по одному депо.
+class _DepotStats {
+  const _DepotStats({
+    required this.depotId,
+    required this.title,
+    required this.line,
+    required this.columns,
+    required this.tchm,
+    required this.machinists,
+    this.orphan = false,
+  });
+
+  final String depotId;
+  final String title;
+  final String line;
+  final int columns;
+  final int tchm;
+  final int machinists;
+
+  /// Строка-сборник для записей без депо: у них `depotId` пустой или чужой.
+  /// Такие остались от времён до разделения по депо — их проставляет скрипт
+  /// миграции, и пока он не отработал, их надо видеть.
+  final bool orphan;
+
+  bool get isEmpty => columns == 0 && tchm == 0 && machinists == 0;
+
+  /// Собирает строки: сперва все известные депо, затем — сборная строка для
+  /// записей, чьё депо в справочнике не значится.
+  static List<_DepotStats> build({
+    required List<ColumnGroup> columns,
+    required List<Machinist> machinists,
+    required List<AppUser> users,
+  }) {
+    final known = {for (final depot in MoscowDepots.all) depot.id};
+    String key(String? id) =>
+        (id != null && known.contains(id)) ? id : _orphanKey;
+
+    final columnsBy = <String, int>{};
+    for (final column in columns) {
+      final id = key(column.depotId);
+      columnsBy[id] = (columnsBy[id] ?? 0) + 1;
+    }
+    final machinistsBy = <String, int>{};
+    for (final machinist in machinists) {
+      final id = key(machinist.depotId);
+      machinistsBy[id] = (machinistsBy[id] ?? 0) + 1;
+    }
+    final tchmBy = <String, int>{};
+    for (final account in users) {
+      if (account.role != UserRole.tchm) continue;
+      final id = key(account.depotId);
+      tchmBy[id] = (tchmBy[id] ?? 0) + 1;
+    }
+
+    final rows = [
+      for (final depot in MoscowDepots.byName)
+        _DepotStats(
+          depotId: depot.id,
+          title: depot.title,
+          line: depot.line,
+          columns: columnsBy[depot.id] ?? 0,
+          tchm: tchmBy[depot.id] ?? 0,
+          machinists: machinistsBy[depot.id] ?? 0,
+        ),
+    ];
+    // Депо с данными наверх, и чем больше машинистов, тем выше: разработчик
+    // приходит сюда смотреть, где что происходит, а не читать алфавит.
+    rows.sort((a, b) {
+      final byMachinists = b.machinists.compareTo(a.machinists);
+      if (byMachinists != 0) return byMachinists;
+      final byColumns = b.columns.compareTo(a.columns);
+      if (byColumns != 0) return byColumns;
+      return a.title.compareTo(b.title);
+    });
+
+    final orphan = _DepotStats(
+      depotId: _orphanKey,
+      title: 'Без депо',
+      line: '',
+      columns: columnsBy[_orphanKey] ?? 0,
+      tchm: tchmBy[_orphanKey] ?? 0,
+      machinists: machinistsBy[_orphanKey] ?? 0,
+      orphan: true,
+    );
+    return [if (!orphan.isEmpty) orphan, ...rows];
+  }
+
+  static const _orphanKey = '';
+}
+
+class _DepotOverviewList extends StatelessWidget {
+  const _DepotOverviewList({required this.rows, required this.user});
+
+  final List<_DepotStats> rows;
+  final AppUser user;
+
+  @override
+  Widget build(BuildContext context) {
+    final filled = rows.where((row) => !row.isEmpty).toList();
+    final empty = rows.where((row) => row.isEmpty).toList();
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+      children: [
+        _DepotTotals(rows: rows),
+        const SizedBox(height: 14),
+        for (final row in filled) ...[
+          _DepotStatsTile(
+            stats: row,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => DepotColumnsScreen(
+                  user: user,
+                  depotId: row.orphan ? null : row.depotId,
+                  title: row.title,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (empty.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Text(
+                'ПУСТО',
+                style: TextStyle(
+                  fontSize: 11,
+                  letterSpacing: 1.6,
+                  fontWeight: FontWeight.w700,
+                  color: AppPalette.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(child: Divider(color: AppPalette.border)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (final row in empty) ...[
+            _DepotStatsTile(stats: row, onTap: () {}),
+            const SizedBox(height: 8),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+/// Шапка сводки: сколько депо уже работает и сколько всего записей.
+class _DepotTotals extends StatelessWidget {
+  const _DepotTotals({required this.rows});
+
+  final List<_DepotStats> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    var columns = 0;
+    var tchm = 0;
+    var machinists = 0;
+    var working = 0;
+    for (final row in rows) {
+      columns += row.columns;
+      tchm += row.tchm;
+      machinists += row.machinists;
+      if (!row.isEmpty && !row.orphan) working += 1;
+    }
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      decoration: BoxDecoration(
+        color: AppPalette.deep,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Штаты с данными: $working из ${MoscowDepots.all.length}',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _TotalCell(
+                value: columns,
+                label: pluralRu(columns, 'колонна', 'колонны', 'колонн'),
+              ),
+              // ТЧМ не склоняется: это сокращение, а не слово.
+              _TotalCell(value: tchm, label: 'ТЧМ'),
+              _TotalCell(
+                value: machinists,
+                label: pluralRu(
+                  machinists,
+                  'машинист',
+                  'машиниста',
+                  'машинистов',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TotalCell extends StatelessWidget {
+  const _TotalCell({required this.value, required this.label});
+
+  final int value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$value',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              height: 1.1,
+            ),
+          ),
+          Text(
+            label,
+            style: const TextStyle(
+              color: DepotBrand.silverMuted,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DepotStatsTile extends StatelessWidget {
+  const _DepotStatsTile({required this.stats, required this.onTap});
+
+  final _DepotStats stats;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = stats.isEmpty;
+    final tile = Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: stats.orphan ? AppPalette.warning : AppPalette.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 38,
+            decoration: BoxDecoration(
+              color: stats.orphan
+                  ? AppPalette.warning
+                  : MetroLineColors.of(stats.line),
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  stats.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: muted
+                        ? AppPalette.textSecondary
+                        : AppPalette.textPrimary,
+                  ),
+                ),
+                if (stats.line.isNotEmpty || stats.orphan) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    stats.orphan
+                        ? 'записи без привязки к депо'
+                        : '${stats.line} линия',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppPalette.textSecondary,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          _StatCell(value: stats.columns, label: 'кол.', muted: muted),
+          _StatCell(value: stats.tchm, label: 'ТЧМ', muted: muted),
+          _StatCell(value: stats.machinists, label: 'маш.', muted: muted),
+          // У пустой строки стрелки нет: она никуда не ведёт, и обещать
+          // переход нечем.
+          Icon(
+            Icons.chevron_right,
+            size: 20,
+            color: muted ? Colors.transparent : DepotBrand.silverMuted,
+          ),
+        ],
+      ),
+    );
+    // Пустое депо открывать незачем — смотреть там нечего, и нажатие
+    // впустую выглядит как поломка.
+    if (muted) return tile;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: tile,
+      ),
+    );
+  }
+}
+
+class _StatCell extends StatelessWidget {
+  const _StatCell({
+    required this.value,
+    required this.label,
+    required this.muted,
+  });
+
+  final int value;
+  final String label;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 52,
+      child: Column(
+        children: [
+          Text(
+            '$value',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              height: 1.1,
+              color: muted ? DepotBrand.silverMuted : AppPalette.textPrimary,
+            ),
+          ),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppPalette.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Одно депо изнутри — вид разработчика из сводки: колонны и учётные записи
+/// двумя вкладками.
+///
+/// Репозиторий у него не отфильтрован, поэтому отбираем депо здесь же, на
+/// клиенте: заводить ради просмотра второй, суженный репозиторий значило бы
+/// поднимать вторую подписку на те же документы.
+class DepotColumnsScreen extends StatelessWidget {
+  const DepotColumnsScreen({
+    super.key,
+    required this.user,
+    required this.depotId,
+    required this.title,
+  });
+
+  final AppUser user;
+
+  /// Депо, чьи колонны показываем. Пусто — сборная строка «Без депо»:
+  /// записи, которым депо ещё не проставили.
+  final String? depotId;
+
+  final String title;
+
+  bool _mine(String? id) {
+    if (depotId != null) return id == depotId;
+    return id == null || !MoscowDepots.all.any((depot) => depot.id == id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(title),
+          bottom: const TabBar(
+            indicatorColor: Colors.white,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            tabs: [
+              Tab(text: 'Колонны'),
+              Tab(text: 'Учётные записи'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          // TabBarView может удалить неактивную вкладку и создать её заново.
+          // Создаём StreamBuilder вместе с вкладкой: поток async* допускает
+          // только одну подписку и не может переиспользоваться после удаления.
+          children: [
+            Builder(builder: _columns),
+            Builder(builder: _accounts),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _columns(BuildContext context) {
+    final deps = AppDependencies.of(context);
+    return StreamBuilder<List<ColumnGroup>>(
+      stream: deps.repository.watchColumns(),
+      builder: (context, columnsSnapshot) {
+        return StreamBuilder<List<Machinist>>(
+          stream: deps.repository.watchMachinists(),
+          builder: (context, machinistsSnapshot) {
+            final waiting =
+                columnsSnapshot.connectionState == ConnectionState.waiting ||
+                machinistsSnapshot.connectionState == ConnectionState.waiting;
+            if (waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final columns = [
+              for (final column in columnsSnapshot.data ?? const <ColumnGroup>[])
+                if (_mine(column.depotId)) column,
+            ];
+            final machinists = [
+              for (final machinist
+                  in machinistsSnapshot.data ?? const <Machinist>[])
+                if (_mine(machinist.depotId)) machinist,
+            ];
+            if (columns.isEmpty) {
+              return _DepotColumnsEmpty(machinists: machinists.length);
+            }
+            return RefreshIndicator(
+              color: DepotBrand.redInk,
+              onRefresh: () async {
+                if (deps.repository is ApiTchmRepository) {
+                  await (deps.repository as ApiTchmRepository).refresh();
+                }
+              },
+              child: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                _ColumnsPane(
+                  user: user,
+                  columns: columns,
+                  selectedColumnId: null,
+                  machinists: machinists,
+                  onSelected: (id) {
+                    final column = columns.firstWhere((item) => item.id == id);
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ColumnDetailScreen(
+                          user: user,
+                          column: column,
+                          columns: columns,
+                        ),
+                      ),
+                    );
+                  },
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Учётные записи выбранного депо.
+  Widget _accounts(BuildContext context) {
+    final deps = AppDependencies.of(context);
+    return StreamBuilder<List<AppUser>>(
+      stream: deps.repository.watchUsers(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final accounts = [
+          for (final account in snapshot.data ?? const <AppUser>[])
+            if (_mine(account.depotId)) account,
+        ]..sort((a, b) => a.displayName.compareTo(b.displayName));
+        if (accounts.isEmpty) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.all(32),
+              child: Text(
+                'Учётных записей нет',
+                style: TextStyle(color: AppPalette.textSecondary),
+              ),
+            ),
+          );
+        }
+        return ListView.separated(
+          padding: const EdgeInsets.all(12),
+          itemCount: accounts.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 8),
+          itemBuilder: (context, index) {
+            return _AccountTile(
+              account: accounts[index],
+              all: accounts,
+              by: user,
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _AccountTile extends StatelessWidget {
+  const _AccountTile({
+    required this.account,
+    required this.all,
+    required this.by,
+  });
+
+  final AppUser account;
+
+  /// Все записи депо: нужны, чтобы найти двойников по табельному номеру.
+  final List<AppUser> all;
+
+  /// Кто закрывает доступ. Кнопка есть только у разработчика.
+  final AppUser by;
+
+  /// Профили того же человека: один табельный номер — один человек, сколько
+  /// бы анонимных входов ни наплодил старый вход.
+  List<AppUser> get _sames {
+    final personnel = account.personnelNumber ?? '';
+    if (personnel.isEmpty) return [account];
+    return [
+      for (final other in all)
+        if ((other.personnelNumber ?? '') == personnel) other,
+    ];
+  }
+
+  Future<void> _toggle(BuildContext context) async {
+    final sames = _sames;
+    final closing = !account.disabled;
+    final deps = AppDependencies.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(closing ? 'Закрыть доступ?' : 'Открыть доступ?'),
+        content: Text(
+          closing
+              ? '${account.displayName}: доступ закроется '
+                    '${sames.length > 1 ? 'у всех ${sames.length} записей '
+                          'с этим табельным номером' : 'к этой записи'}. '
+                    'Войти станет нельзя, данные останутся на месте.'
+              : '${account.displayName}: доступ откроется снова '
+                    '${sames.length > 1 ? 'у всех ${sames.length} записей'
+                          : 'к этой записи'}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: closing
+                ? FilledButton.styleFrom(backgroundColor: AppPalette.danger)
+                : null,
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(closing ? 'Закрыть' : 'Открыть'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await deps.repository.setAccountStatus(
+        userIds: [for (final item in sames) item.id],
+        status: closing ? AccountStatus.disabled : AccountStatus.active,
+        by: by,
+      );
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            closing
+                ? 'Доступ закрыт: ${account.displayName}'
+                : 'Доступ открыт: ${account.displayName}',
+          ),
+        ),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Не получилось: $error')),
+      );
+    }
+  }
+
+  /// Удаление профилей. Отдельным подтверждением, где прямо сказано, чего
+  /// оно НЕ делает: учётная запись в Firebase Auth остаётся, и человек с ней
+  /// сможет войти снова — просто без профиля.
+  Future<void> _delete(BuildContext context) async {
+    final sames = _sames;
+    final deps = AppDependencies.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить из базы?'),
+        content: Text(
+          '${account.displayName}: будет удалено '
+          '${sames.length > 1 ? '${sames.length} записей' : '1 запись'} '
+          'из коллекции users. Отменить нельзя.\n\n'
+          'Учётная запись входа при этом остаётся — если человек войдёт '
+          'снова, профиль создастся заново. Чтобы закрыть доступ насовсем, '
+          'надёжнее не удалять, а закрыть доступ: закрытая запись помнит, '
+          'что она закрыта, а удалённая — нет.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppPalette.danger,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await deps.repository.deleteAccounts(
+        userIds: [for (final item in sames) item.id],
+        by: by,
+      );
+      messenger.showSnackBar(
+        SnackBar(content: Text('Удалено: ${account.displayName}')),
+      );
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('Не получилось: $error')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppPalette.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  account.displayName.isEmpty
+                      ? 'Без имени'
+                      : account.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.textPrimary,
+                  ),
+                ),
+              ),
+              _AccountBadge(
+                text: account.role.title,
+                color: account.role.canEditAny
+                    ? DepotBrand.redInk
+                    : AppPalette.textSecondary,
+              ),
+              if (by.role.canManageAccounts &&
+                  by.id != account.id &&
+                  !account.role.isDeveloper) ...[
+                IconButton(
+                  tooltip: account.disabled
+                      ? 'Открыть доступ'
+                      : 'Закрыть доступ',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _toggle(context),
+                  icon: Icon(
+                    account.disabled ? Icons.lock_open_outlined : Icons.block,
+                    size: 20,
+                    color: account.disabled
+                        ? DepotBrand.ok
+                        : AppPalette.danger,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Удалить из базы',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _delete(context),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 20,
+                    color: AppPalette.textSecondary,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 6),
+          _AccountBadge(
+            text: account.status == AccountStatus.pending
+                ? 'ждёт подтверждения'
+                : account.status == AccountStatus.disabled
+                ? 'отключена'
+                : 'активна',
+            color: account.status == AccountStatus.active
+                ? DepotBrand.ok
+                : AppPalette.warning,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AccountBadge extends StatelessWidget {
+  const _AccountBadge({required this.text, required this.color});
+
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+/// Колонн нет, но машинисты быть могут: у записи проставлено депо, а колонна
+/// потерялась. Молчать об этом нельзя — это и есть поломка, которую
+/// разработчик сюда пришёл искать.
+class _DepotColumnsEmpty extends StatelessWidget {
+  const _DepotColumnsEmpty({required this.machinists});
+
+  final int machinists;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.dashboard_outlined,
+              size: 36,
+              color: DepotBrand.silverMuted,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Колонн нет',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: AppPalette.textPrimary,
+              ),
+            ),
+            if (machinists > 0) ...[
+              const SizedBox(height: 6),
+              Text(
+                'При этом машинистов здесь $machinists: они привязаны к '
+                'колоннам, которых в этом депо нет.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  height: 1.35,
+                  color: AppPalette.warning,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class HomeScreen extends StatefulWidget {
@@ -1636,16 +4815,28 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _search = TextEditingController();
-  var _columnsEnsured = false;
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_columnsEnsured || !widget.user.role.canEditAny) return;
-    _columnsEnsured = true;
-    unawaited(
-      AppDependencies.of(context).repository.ensureDefaultColumns(widget.user),
+  /// Заводит колонну: спрашиваем только номер, остальное известно — депо и
+  /// ТЧМ берём из профиля того, кто её создаёт.
+  Future<void> _createColumn(List<ColumnGroup> columns) async {
+    final taken = columns.map((column) => column.number).toSet();
+    final number = await showDialog<int>(
+      context: context,
+      builder: (_) => _CreateColumnDialog(takenNumbers: taken),
     );
+    if (number == null || !mounted) return;
+    final deps = AppDependencies.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await deps.repository.createColumn(number: number, user: widget.user);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Колонна №$number создана')),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Не удалось создать колонну: $error')),
+      );
+    }
   }
 
   @override
@@ -1667,9 +4858,10 @@ class _HomeScreenState extends State<HomeScreen> {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        final columns = firestoreColumns.isEmpty
-            ? SeedData.columns
-            : firestoreColumns;
+        // Раньше при пустой базе подставлялись 12 колонн из SeedData — это
+        // колонны ТЧ-16 с их фамилиями, и в любом другом депо они чужие.
+        // Пустое депо теперь так и показывается пустым.
+        final columns = firestoreColumns;
         return StreamBuilder<List<Machinist>>(
           stream: deps.repository.watchMachinists(),
           builder: (context, machinistsSnapshot) {
@@ -1704,15 +4896,45 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     icon: Badge(
                       isLabelVisible: attentionTotal > 0,
-                      backgroundColor: AppPalette.danger,
+                      // На красной шапке красная плашка не читается —
+                      // выворачиваем цвета.
+                      backgroundColor: Colors.white,
+                      textColor: DepotBrand.redInk,
                       label: Text('$attentionTotal'),
                       child: const Icon(Icons.warning_amber_rounded),
                     ),
                   ),
-                  _AppBarPill(
-                    icon: Icons.person_outline,
-                    text: widget.user.role.title,
-                  ),
+                  if (widget.user.role.canManageDatabaseLock)
+                    StreamBuilder<AppLock>(
+                      stream: deps.repository.watchLock(),
+                      builder: (context, lockSnapshot) {
+                        final lock = lockSnapshot.data ?? const AppLock();
+                        return IconButton(
+                          tooltip: 'Режим обслуживания',
+                          onPressed: () => showDialog<void>(
+                            context: context,
+                            builder: (_) => ServiceLockDialog(
+                              user: widget.user,
+                              lock: lock,
+                            ),
+                          ),
+                          icon: Icon(
+                            lock.isActive
+                                ? Icons.lock_outline
+                                : Icons.lock_open_outlined,
+                            color: lock.isActive
+                                ? const Color(0xFFFFD166)
+                                : null,
+                          ),
+                        );
+                      },
+                    ),
+                  if (widget.user.role.canEditAny && columns.isNotEmpty)
+                    IconButton(
+                      tooltip: 'Создать колонну',
+                      onPressed: () => _createColumn(columns),
+                      icon: const Icon(Icons.add),
+                    ),
                   IconButton(
                     tooltip: 'Выйти',
                     onPressed: deps.auth.signOut,
@@ -1721,9 +4943,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(width: 4),
                 ],
               ),
-              body: ListView(
-                padding: const EdgeInsets.all(12),
-                children: [
+              body: RefreshIndicator(
+                color: DepotBrand.redInk,
+                // Живого потока на новом сервере нет: список читается при
+                // открытии экрана и вот этим жестом.
+                onRefresh: () async {
+                  final repository = deps.repository;
+                  if (repository is ApiTchmRepository) {
+                    await repository.refresh();
+                  }
+                },
+                child: ListView(
+                  padding: const EdgeInsets.all(12),
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
+                  children: [
+                    const MaintenanceBanner(),
                   _KeyboardTextField(
                     controller: _search,
                     textInputAction: TextInputAction.search,
@@ -1745,7 +4981,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  if (query.isEmpty)
+                  // Пустое депо: колонн ещё нет, их заводит ТЧМ вручную.
+                  // Шаблонные 12 колонн больше не создаются — они были с
+                  // фамилиями ТЧ-16 и в другом депо оказывались чужими.
+                  if (query.isEmpty && columns.isEmpty)
+                    _EmptyColumnsCard(
+                      canCreate: widget.user.role.canEditAny,
+                      onCreate: () => _createColumn(columns),
+                    )
+                  else if (query.isEmpty)
                     _ColumnsPane(
                       user: widget.user,
                       columns: columns,
@@ -1787,12 +5031,129 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     ),
-                ],
+                  ],
+                ),
               ),
             );
           },
         );
       },
+    );
+  }
+}
+
+/// Переключатель режима обслуживания. Пишет флаг в `config/app`; запрет
+/// применяют правила Firestore на сервере, поэтому действует на все уже
+/// установленные сборки без обновления.
+class ServiceLockDialog extends StatefulWidget {
+  const ServiceLockDialog({super.key, required this.user, required this.lock});
+
+  final AppUser user;
+  final AppLock lock;
+
+  @override
+  State<ServiceLockDialog> createState() => _ServiceLockDialogState();
+}
+
+class _ServiceLockDialogState extends State<ServiceLockDialog> {
+  late AppLock _lock = widget.lock;
+  var _saving = false;
+
+  Future<void> _apply(AppLock next) async {
+    if (!mounted) return;
+    setState(() {
+      _lock = next;
+      _saving = true;
+    });
+    try {
+      await AppDependencies.of(context).repository.setLock(next, widget.user);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _lock = widget.lock);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось изменить режим: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<bool> _confirmBlackout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Скрыть данные у всех?'),
+        content: const Text(
+          'Приложение перестанет открываться у всех пользователей, включая '
+          'тех, кто сейчас на смене. Данные в базе останутся целы.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Скрыть'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Режим обслуживания'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _lock.writesBlocked,
+            onChanged: _saving
+                ? null
+                : (value) => _apply(_lock.copyWith(writesBlocked: value)),
+            title: const Text('Только просмотр'),
+            subtitle: const Text(
+              'Данные видны, но изменения по машинистам не сохраняются.',
+            ),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _lock.readsBlocked,
+            onChanged: _saving
+                ? null
+                : (value) async {
+                    if (value && !await _confirmBlackout()) return;
+                    await _apply(_lock.copyWith(readsBlocked: value));
+                  },
+            title: const Text('Полная блокировка'),
+            subtitle: const Text(
+              'Приложение не открывается ни у кого, кроме разработчика.',
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _lock.isActive
+                ? 'Режим обслуживания включён. Данные в базе не тронуты.'
+                : 'Приложение работает в обычном режиме.',
+            style: TextStyle(
+              color: _lock.isActive
+                  ? AppPalette.danger
+                  : AppPalette.textSecondary,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.of(context).pop(),
+          child: const Text('Закрыть'),
+        ),
+      ],
     );
   }
 }
@@ -2032,9 +5393,9 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка сохранения: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка сохранения: $e')));
       }
     }
   }
@@ -2072,13 +5433,12 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка создания PDF: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка создания PDF: $e')));
       }
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -2111,94 +5471,13 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [AppPalette.deep, AppPalette.accent],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 52,
-                        height: 52,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        child: Text(
-                          '${widget.column.number}',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.column.title,
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white,
-                              ),
-                            ),
-                            if (widget.column.tchmName.isNotEmpty)
-                              Text(
-                                'ТЧМ: ${widget.column.tchmName}',
-                                style: TextStyle(
-                                  fontSize: 13.5,
-                                  color: Colors.white.withValues(alpha: 0.85),
-                                ),
-                              ),
-                            if (widget.column.instructorName.isNotEmpty)
-                              Text(
-                                'Инструктор: ${widget.column.instructorName}',
-                                style: TextStyle(
-                                  fontSize: 13.5,
-                                  color: Colors.white.withValues(alpha: 0.85),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.ios_share,
-                          color: Colors.white,
-                          size: 22,
-                        ),
-                        onPressed: () => _handleShare(allMachinists),
-                        padding: EdgeInsets.zero,
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      if (Platform.isAndroid)
-                        IconButton(
-                          icon: const Icon(
-                            Icons.download,
-                            color: Colors.white,
-                            size: 22,
-                          ),
-                          onPressed: () =>
-                              _handleSaveAndroid(allMachinists),
-                          padding: EdgeInsets.zero,
-                          visualDensity: VisualDensity.compact,
-                        ),
-                    ],
-                  ),
+                _ColumnActionBar(
+                  column: widget.column,
+                  canExport: widget.user.role.canExportData,
+                  onShare: () => _handleShare(allMachinists),
+                  onSave: Platform.isAndroid
+                      ? () => _handleSaveAndroid(allMachinists)
+                      : null,
                 ),
                 const SizedBox(height: 12),
                 Expanded(
@@ -2215,14 +5494,140 @@ class _ColumnDetailScreenState extends State<ColumnDetailScreen> {
             ),
           ),
           floatingActionButton: widget.user.canAddToColumn(widget.column.id)
-              ? FloatingActionButton.extended(
+              // Только значок: подпись повторяла очевидное и занимала
+              // треть ширины экрана. Смысл действия остаётся в подсказке
+              // по долгому нажатию и в озвучке для скринридера.
+              ? FloatingActionButton(
                   onPressed: _openEditor,
-                  icon: const Icon(Icons.person_add_alt),
-                  label: const Text('Добавить'),
+                  tooltip: 'Добавить машиниста',
+                  child: const Icon(Icons.person_add_alt),
                 )
               : null,
         );
       },
+    );
+  }
+}
+
+/// Компактная плашка колонны: номер, название и выгрузка в PDF.
+///
+/// ТЧМ и инструктор здесь не повторяются — они уже видны в списке колонн,
+/// а плашка нужна прежде всего ради кнопок выгрузки.
+///
+/// Гостю кнопок не показываем: «только просмотр» не должно означать
+/// «просмотр и вынести колонну наружу одним файлом».
+class _ColumnActionBar extends StatelessWidget {
+  const _ColumnActionBar({
+    required this.column,
+    required this.canExport,
+    required this.onShare,
+    this.onSave,
+  });
+
+  final ColumnGroup column;
+  final bool canExport;
+  final VoidCallback onShare;
+  final VoidCallback? onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: DepotBrand.redInk,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: DepotBrand.redInk.withValues(alpha: 0.22),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
+            ),
+            child: Text(
+              '${column.number}',
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              column.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 16.5,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          if (canExport) ...[
+            _PdfAction(
+              icon: Icons.ios_share,
+              tooltip: 'Поделиться PDF',
+              onPressed: onShare,
+            ),
+            if (onSave != null) ...[
+              const SizedBox(width: 6),
+              _PdfAction(
+                icon: Icons.download_rounded,
+                tooltip: 'Сохранить PDF',
+                onPressed: onSave!,
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Кнопка выгрузки на красной плашке: своя подложка, чтобы читалась
+/// как кнопка, а не как значок на фоне.
+class _PdfAction extends StatelessWidget {
+  const _PdfAction({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.white.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(11),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(11),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 40,
+            height: 40,
+            child: Center(child: Icon(icon, size: 19, color: Colors.white)),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -2235,12 +5640,15 @@ class _StatusCountBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = checkStatusColor(status);
-    final background = status == CheckStatus.overdue
-        ? AppPalette.dangerTint
-        : AppPalette.warningTint;
+    // В карточке колонны статусы должны читаться как спокойные счётчики,
+    // а не как ещё одна яркая кнопка рядом с номером колонны.
+    final (foreground, background) = switch (status) {
+      CheckStatus.overdue => (const Color(0xFFC65A61), const Color(0xFFFCEDEF)),
+      CheckStatus.soon => (const Color(0xFFD09A24), const Color(0xFFFFF6DE)),
+      _ => (AppPalette.textSecondary, AppPalette.surfaceTint),
+    };
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(999),
@@ -2248,18 +5656,73 @@ class _StatusCountBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(checkStatusIcon(status), size: 14, color: color),
-          const SizedBox(width: 3),
+          Icon(checkStatusIcon(status), size: 12, color: foreground),
+          const SizedBox(width: 2),
           Text(
             '$count',
             style: TextStyle(
               fontWeight: FontWeight.w800,
-              fontSize: 12.5,
-              color: color,
+              fontSize: 11.5,
+              color: foreground,
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Полоса режима обслуживания для прокручиваемого списка.
+///
+/// Поток создаётся в состоянии, а не в `build` родителя: список выбрасывает
+/// уехавший за край элемент и потом собирает его заново из того же виджета,
+/// а повторная подписка на однократный поток роняет экран.
+class MaintenanceBanner extends StatefulWidget {
+  const MaintenanceBanner({super.key});
+
+  @override
+  State<MaintenanceBanner> createState() => _MaintenanceBannerState();
+}
+
+class _MaintenanceBannerState extends State<MaintenanceBanner> {
+  Stream<AppLock>? _lock;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _lock ??= AppDependencies.of(context).repository.watchLock();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AppLock>(
+      stream: _lock,
+      builder: (context, snapshot) {
+        final lock = snapshot.data ?? const AppLock();
+        if (!lock.writesBlocked) return const SizedBox.shrink();
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppPalette.danger.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppPalette.danger.withValues(alpha: 0.4)),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.build_circle_outlined, color: AppPalette.danger),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Идут технические работы. Изменение данных '
+                  'временно недоступно, доступен только просмотр.',
+                  style: TextStyle(color: AppPalette.danger),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -2281,165 +5744,202 @@ class _ColumnsPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: columns.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final column = columns[index];
-                final selected = column.id == selectedColumnId;
-                final columnMachinists = machinists
-                    .where((item) => item.columnId == column.id)
-                    .toList();
-                final count = columnMachinists.length;
-                final overdueCount = columnMachinists
-                    .where(
-                      (item) =>
-                          machinistOverallStatus(item) == CheckStatus.overdue,
-                    )
-                    .length;
-                final soonCount = columnMachinists
-                    .where(
-                      (item) =>
-                          machinistOverallStatus(item) == CheckStatus.soon,
-                    )
-                    .length;
-                return Material(
-                  color: selected ? AppPalette.surfaceTint : Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () => onSelected(column.id),
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
+    // Список без общей обёртки: карточка внутри карточки давала двойную
+    // рамку и лишнее поле по краям. Каждая строка лежит на фоне сама.
+    return ListView.separated(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      itemCount: columns.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final column = columns[index];
+        final selected = column.id == selectedColumnId;
+        final columnMachinists = machinists
+            .where((item) => item.columnId == column.id)
+            .toList();
+        final count = columnMachinists.length;
+        final overdueCount = columnMachinists
+            .where(
+              (item) => machinistOverallStatus(item) == CheckStatus.overdue,
+            )
+            .length;
+        final soonCount = columnMachinists
+            .where((item) => machinistOverallStatus(item) == CheckStatus.soon)
+            .length;
+        final card = DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0F1B1D20),
+                blurRadius: 10,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Material(
+            color: selected ? AppPalette.surfaceTint : Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => onSelected(column.id),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: selected ? AppPalette.accent : AppPalette.border,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      alignment: Alignment.center,
                       decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [DepotBrand.redLight, DepotBrand.redDeep],
+                        ),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: selected
-                              ? AppPalette.accent
-                              : AppPalette.border,
+                      ),
+                      child: Text(
+                        '${column.number}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
                         ),
                       ),
-                      child: Row(
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            width: 42,
-                            height: 42,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? AppPalette.deep
-                                  : AppPalette.surfaceTint,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              '${column.number}',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                                color: selected
-                                    ? Colors.white
-                                    : AppPalette.deep,
-                              ),
+                          Text(
+                            column.title,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15,
+                              color: AppPalette.textPrimary,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  column.title,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 15,
-                                    color: AppPalette.textPrimary,
-                                  ),
-                                ),
-                                if (column.tchmName.isNotEmpty)
-                                  Text(
-                                    'ТЧМ: ${column.tchmName}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      color: AppPalette.textSecondary,
-                                    ),
-                                  ),
-                                if (column.instructorName.isNotEmpty)
-                                  Text(
-                                    'Инструктор: ${column.instructorName}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      color: AppPalette.textSecondary,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          if (overdueCount > 0) ...[
-                            _StatusCountBadge(
-                              status: CheckStatus.overdue,
-                              count: overdueCount,
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          if (soonCount > 0) ...[
-                            _StatusCountBadge(
-                              status: CheckStatus.soon,
-                              count: soonCount,
-                            ),
-                            const SizedBox(width: 6),
-                          ],
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppPalette.surfaceTint,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text(
-                              '$count',
+                          if (column.tchmName.isNotEmpty)
+                            Text(
+                              'ТЧМ: ${column.tchmName}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                fontWeight: FontWeight.w800,
                                 fontSize: 13,
-                                color: AppPalette.deep,
+                                color: AppPalette.textSecondary,
                               ),
                             ),
-                          ),
-                          if (user.role.isDeveloper) ...[
-                            const SizedBox(width: 4),
-                            IconButton(
-                              visualDensity: VisualDensity.compact,
-                              tooltip: 'Изменить ТЧМ / инструктора',
-                              icon: const Icon(Icons.edit_outlined, size: 20),
-                              color: AppPalette.deep,
-                              onPressed: () => _editColumn(context, column),
+                          if (column.instructorName.isNotEmpty)
+                            Text(
+                              'Инструктор: ${column.instructorName}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: AppPalette.textSecondary,
+                              ),
                             ),
-                          ],
                         ],
                       ),
                     ),
-                  ),
-                );
-              },
+                    const SizedBox(width: 6),
+                    if (overdueCount > 0) ...[
+                      _StatusCountBadge(
+                        status: CheckStatus.overdue,
+                        count: overdueCount,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                    if (soonCount > 0) ...[
+                      _StatusCountBadge(
+                        status: CheckStatus.soon,
+                        count: soonCount,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppPalette.surfaceTint,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        '$count',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                          color: AppPalette.deep,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ],
-        ),
+          ),
+        );
+        // Инструктору правка колонны не нужна: он ведёт машинистов своей,
+        // а кто её ведёт — решают ТЧМ.
+        if (!user.role.canEditAny) return card;
+        return ColumnActions(
+          key: ValueKey('column-edit-${column.id}'),
+          onEdit: () => _editColumn(context, column),
+          onDelete: () => _deleteColumn(context, column, count),
+          child: card,
+        );
+      },
+    );
+  }
+
+  Future<void> _deleteColumn(
+    BuildContext context,
+    ColumnGroup column,
+    int machinistCount,
+  ) async {
+    final repository = AppDependencies.of(context).repository;
+    final messenger = ScaffoldMessenger.of(context);
+    if (machinistCount > 0) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('Сначала перенесите машинистов в другую колонну.'),
+      ));
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Удалить «${column.title}»?'),
+        content: const Text('Пустая колонна будет удалена. Отменить это действие нельзя.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
       ),
     );
+    if (confirmed != true) return;
+    try {
+      await repository.deleteColumn(column, user);
+      messenger.showSnackBar(SnackBar(content: Text('${column.title} удалена')));
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('Не удалось удалить: $error')));
+    }
   }
 
   Future<void> _editColumn(BuildContext context, ColumnGroup column) async {
@@ -2460,56 +5960,6 @@ class _ColumnsPane extends StatelessWidget {
   }
 }
 
-class _DeveloperLoginDialog extends StatefulWidget {
-  const _DeveloperLoginDialog();
-
-  @override
-  State<_DeveloperLoginDialog> createState() => _DeveloperLoginDialogState();
-}
-
-class _DeveloperLoginDialogState extends State<_DeveloperLoginDialog> {
-  late final TextEditingController _password;
-
-  @override
-  void initState() {
-    super.initState();
-    _password = TextEditingController();
-  }
-
-  @override
-  void dispose() {
-    _password.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Вход разработчика'),
-      content: _KeyboardTextField(
-        controller: _password,
-        obscureText: true,
-        textInputAction: TextInputAction.done,
-        decoration: const InputDecoration(
-          labelText: 'Пароль разработчика',
-          prefixIcon: Icon(Icons.lock_outline),
-        ),
-        onSubmitted: (value) => Navigator.of(context).pop(value),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Отмена'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(_password.text),
-          child: const Text('Войти'),
-        ),
-      ],
-    );
-  }
-}
-
 class _ColumnEditorDialog extends StatefulWidget {
   const _ColumnEditorDialog({required this.column});
 
@@ -2522,7 +5972,6 @@ class _ColumnEditorDialog extends StatefulWidget {
 class _ColumnEditorDialogState extends State<_ColumnEditorDialog> {
   late final TextEditingController _tchmName;
   late final TextEditingController _tchmNumber;
-  late final TextEditingController _instructorName;
 
   @override
   void initState() {
@@ -2531,71 +5980,221 @@ class _ColumnEditorDialogState extends State<_ColumnEditorDialog> {
     _tchmNumber = TextEditingController(
       text: widget.column.tchmPersonnelNumber,
     );
-    _instructorName = TextEditingController(text: widget.column.instructorName);
   }
 
   @override
   void dispose() {
     _tchmName.dispose();
     _tchmNumber.dispose();
-    _instructorName.dispose();
     super.dispose();
   }
 
+  /// Инструктора здесь нет намеренно. Это свободный текст, который ни на
+  /// что не влияет: права инструктора живут в его профиле, в
+  /// `assignedColumnId`, а не в этой строке. Править колонну — значит
+  /// указать, кто её ведёт; уже записанный текст сохраняется как есть.
   void _save() {
     Navigator.of(context).pop(
       widget.column.copyWith(
         tchmName: _tchmName.text.trim(),
         tchmPersonnelNumber: _tchmNumber.text.trim(),
-        instructorName: _instructorName.text.trim(),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Колонна ${widget.column.number}'),
-      content: SingleChildScrollView(
+    // Dialog сам добавляет viewInsets клавиатуры к insetPadding.
+    // Повторный учёт сжимает область полей и обрезает кнопки на iPhone.
+    return Dialog(
+      backgroundColor: Colors.white,
+      clipBehavior: Clip.antiAlias,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
-              controller: _tchmName,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'ТЧМ (фамилия, инициалы)',
-                prefixIcon: Icon(Icons.badge_outlined),
+            _ColumnEditorHeader(column: widget.column),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 2),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _field(
+                      label: 'ТЧМ',
+                      hint: 'Фамилия и инициалы',
+                      icon: Icons.badge_outlined,
+                      controller: _tchmName,
+                      action: TextInputAction.next,
+                      capitalization: TextCapitalization.words,
+                    ),
+                    const SizedBox(height: 14),
+                    _field(
+                      label: 'Табельный ТЧМ',
+                      hint: 'Только цифры',
+                      icon: Icons.tag,
+                      controller: _tchmNumber,
+                      action: TextInputAction.done,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _tchmNumber,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Табельный ТЧМ',
-                prefixIcon: Icon(Icons.tag),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _instructorName,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Инструктор (фамилия, инициалы)',
-                prefixIcon: Icon(Icons.person_outline),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Отмена'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _save,
+                      child: const Text('Сохранить'),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Отмена'),
+    );
+  }
+
+  Widget _field({
+    required String label,
+    required String hint,
+    required IconData icon,
+    required TextEditingController controller,
+    required TextInputAction action,
+    TextInputType? keyboardType,
+    TextCapitalization capitalization = TextCapitalization.none,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 6),
+          child: Text(
+            label.toUpperCase(),
+            style: const TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.6,
+              color: AppPalette.textSecondary,
+            ),
+          ),
         ),
-        FilledButton(onPressed: _save, child: const Text('Сохранить')),
+        _KeyboardTextField(
+          controller: controller,
+          keyboardType: keyboardType,
+          textInputAction: action,
+          textCapitalization: capitalization,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: AppPalette.textPrimary,
+          ),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(
+              fontWeight: FontWeight.w400,
+              color: DepotBrand.silverMuted,
+            ),
+            prefixIcon: Icon(icon, size: 20),
+            isDense: true,
+            fillColor: AppPalette.surfaceTint,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 14,
+            ),
+          ),
+        ),
       ],
+    );
+  }
+}
+
+/// Шапка редактора колонны: номер в фирменной плашке, название и крестик.
+class _ColumnEditorHeader extends StatelessWidget {
+  const _ColumnEditorHeader({required this.column});
+
+  final ColumnGroup column;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 16, 8, 16),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [DepotBrand.redLight, DepotBrand.redDeep],
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '${column.number}',
+              style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  column.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Кто ведёт колонну',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: Colors.white.withValues(alpha: 0.82),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Закрыть',
+            icon: const Icon(Icons.close_rounded, color: Colors.white),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2621,65 +6220,72 @@ class _MachinistsPane extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = selectedColumn == null ? 'Все машинисты' : 'Машинисты';
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              alignment: WrapAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                        color: AppPalette.textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-                SizedBox(
-                  width: 300,
-                  child: _KeyboardTextField(
-                    controller: search,
-                    textInputAction: TextInputAction.search,
-                    onChanged: (_) => onSearchChanged(),
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      labelText: 'Поиск',
-                      prefixIcon: Icon(Icons.search),
-                    ),
+    // Без общей карточки: список машинистов сам состоит из карточек,
+    // и обёртка давала рамку в рамке. Поиск и заголовок лежат на фоне.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _KeyboardTextField(
+          controller: search,
+          textInputAction: TextInputAction.search,
+          onChanged: (_) => onSearchChanged(),
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: 'Поиск по фамилии',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: search.text.trim().isEmpty
+                ? null
+                : IconButton(
+                    tooltip: 'Очистить',
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () {
+                      search.clear();
+                      onSearchChanged();
+                    },
                   ),
-                ),
-              ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: AppPalette.textPrimary,
+              ),
             ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: machinists.isEmpty
-                  ? const _EmptyList()
-                  : ListView.separated(
-                      itemCount: machinists.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        return MachinistCard(
-                          user: user,
-                          machinist: machinists[index],
-                          columns: columns,
-                        );
-                      },
-                    ),
+            const Spacer(),
+            Text(
+              '${machinists.length}',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppPalette.textSecondary,
+              ),
             ),
           ],
         ),
-      ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: machinists.isEmpty
+              ? const _EmptyList()
+              // Нижний отступ оставляет место под плавающую кнопку.
+              : ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 88),
+                  itemCount: machinists.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    return MachinistCard(
+                      user: user,
+                      machinist: machinists[index],
+                      columns: columns,
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }
@@ -2695,7 +6301,7 @@ class _EmptyList extends StatelessWidget {
   }
 }
 
-class MachinistCard extends StatelessWidget {
+class MachinistCard extends StatefulWidget {
   const MachinistCard({
     super.key,
     required this.user,
@@ -2708,8 +6314,123 @@ class MachinistCard extends StatelessWidget {
   final List<ColumnGroup> columns;
 
   @override
+  State<MachinistCard> createState() => _MachinistCardState();
+}
+
+class _MachinistCardState extends State<MachinistCard>
+    with SingleTickerProviderStateMixin {
+  /// Насколько карточка уезжает влево, открывая кнопку правки.
+  static const double _actionWidth = 88;
+
+  /// Открытой может быть только одна карточка во всём приложении. Когда
+  /// следующая карточка забирает это состояние, предыдущая закрывается.
+  static final ValueNotifier<String?> _openCardId = ValueNotifier(null);
+
+  late final AnimationController _slide = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _openCardId.addListener(_closeWhenAnotherCardOpens);
+  }
+
+  @override
+  void dispose() {
+    _openCardId.removeListener(_closeWhenAnotherCardOpens);
+    if (_openCardId.value == widget.machinist.id) {
+      _openCardId.value = null;
+    }
+    _slide.dispose();
+    super.dispose();
+  }
+
+  bool get _isOpen => _slide.value > 0;
+
+  void _closeWhenAnotherCardOpens() {
+    if (_openCardId.value != widget.machinist.id && _isOpen) {
+      _close(releaseActiveCard: false);
+    }
+  }
+
+  void _claimOpenState() {
+    if (_openCardId.value != widget.machinist.id) {
+      _openCardId.value = widget.machinist.id;
+    }
+  }
+
+  void _releaseOpenState() {
+    if (_openCardId.value == widget.machinist.id) {
+      _openCardId.value = null;
+    }
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    final delta = details.primaryDelta ?? 0;
+    final nextValue = _slide.value - delta / _actionWidth;
+    if (nextValue > _slide.value) _claimOpenState();
+    _slide.value = nextValue;
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    // Быстрый рывок докидывает карточку до края, медленный — притягивает
+    // к ближайшему положению.
+    final velocity = -details.velocity.pixelsPerSecond.dx / _actionWidth;
+    if (velocity.abs() > 1.5) {
+      if (velocity > 0) {
+        _claimOpenState();
+      } else {
+        _releaseOpenState();
+      }
+      _slide.fling(velocity: velocity);
+    } else {
+      if (_slide.value > 0.5) {
+        _claimOpenState();
+        _slide.animateTo(1, curve: Curves.easeOut);
+      } else {
+        _close();
+      }
+    }
+  }
+
+  void _close({bool releaseActiveCard = true}) {
+    _slide.animateTo(0, curve: Curves.easeOut);
+    if (releaseActiveCard) _releaseOpenState();
+  }
+
+  Future<void> _openEditor(ColumnGroup? column) async {
+    _releaseOpenState();
+    await _slide.animateTo(0, duration: const Duration(milliseconds: 140));
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MachinistEditorScreen(
+          user: widget.user,
+          columns: widget.columns,
+          machinist: widget.machinist,
+          initialColumn: column,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyMachinist(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await Clipboard.setData(
+      ClipboardData(text: _machinistClipboardText(widget.machinist)),
+    );
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Скопировано в буфер обмена')),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final canEdit = user.canEditMachinist(machinist);
+    final machinist = widget.machinist;
+    final columns = widget.columns;
+    final canEdit = widget.user.canEditMachinist(machinist);
     final column = columns
         .where((value) => value.id == machinist.columnId)
         .cast<ColumnGroup?>()
@@ -2720,23 +6441,20 @@ class MachinistCard extends StatelessWidget {
     };
     final overall = machinistOverallStatus(machinist);
 
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
+    final card = DecoratedBox(
+      decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        onTap: canEdit
-            ? () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => MachinistEditorScreen(
-                    user: user,
-                    columns: columns,
-                    machinist: machinist,
-                    initialColumn: column,
-                  ),
-                ),
-              )
-            : null,
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F1B1D20),
+            blurRadius: 10,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
         child: Container(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
           decoration: BoxDecoration(
@@ -2766,7 +6484,7 @@ class MachinistCard extends StatelessWidget {
                             'Колонна ${machinist.columnNumber}',
                             if (machinist.classRank.isNotEmpty)
                               'Класс ${machinist.classRank}',
-                            if (machinist.vn.isNotEmpty) 'В/Н ${machinist.vn}',
+                            ?machinistExperienceLabel(machinist.workStart),
                           ].join(' · '),
                           style: const TextStyle(
                             fontSize: 12,
@@ -2785,15 +6503,21 @@ class MachinistCard extends StatelessWidget {
                         color: checkStatusColor(overall),
                       ),
                     ),
-                  if (canEdit)
-                    const Padding(
-                      padding: EdgeInsets.only(left: 8),
-                      child: Icon(
-                        Icons.edit_outlined,
-                        size: 18,
-                        color: AppPalette.textSecondary,
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: IconButton(
+                      icon: const Icon(Icons.copy_outlined, size: 18),
+                      color: AppPalette.textSecondary,
+                      tooltip: 'Копировать',
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
                       ),
+                      padding: EdgeInsets.zero,
+                      onPressed: () => _copyMachinist(context),
                     ),
+                  ),
                 ],
               ),
               _WorkMarksPanel(
@@ -2807,25 +6531,25 @@ class MachinistCard extends StatelessWidget {
                   _WorkMark(
                     'КИП',
                     machinist.kip,
-                    Icons.build_circle_outlined,
+                    MachinistIcons.kip,
                     status: statusByDiscipline[CheckDiscipline.kip],
                   ),
                   _WorkMark(
                     'ТРА',
                     machinist.tra,
-                    Icons.route_outlined,
+                    MachinistIcons.tra,
                     status: statusByDiscipline[CheckDiscipline.tra],
                   ),
                   _WorkMark(
-                    'АТЗ',
+                    'АЗЗ',
                     machinist.atz,
-                    Icons.local_gas_station_outlined,
+                    MachinistIcons.atz,
                     status: statusByDiscipline[CheckDiscipline.atz],
                   ),
                   _WorkMark(
                     'Сцеп',
                     _couplingMark(machinist),
-                    Icons.link,
+                    MachinistIcons.coupling,
                     status: statusByDiscipline[CheckDiscipline.coupling],
                   ),
                 ],
@@ -2911,6 +6635,70 @@ class MachinistCard extends StatelessWidget {
         ),
       ),
     );
+
+    if (!canEdit) return card;
+
+    // Правка вызывается свайпом влево: карточка сдвигается и открывает
+    // кнопку. Тап по карточке редактор больше не открывает — он только
+    // закрывает уже выехавшую кнопку.
+    return Stack(
+      children: [
+        Positioned.fill(child: _editAction(column)),
+        AnimatedBuilder(
+          animation: _slide,
+          builder: (context, child) => Transform.translate(
+            offset: Offset(-_slide.value * _actionWidth, 0),
+            child: child,
+          ),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragUpdate: _onDragUpdate,
+            onHorizontalDragEnd: _onDragEnd,
+            onTap: () {
+              if (_isOpen) _close();
+            },
+            child: card,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Кнопка правки, лежащая под карточкой у правого края.
+  Widget _editAction(ColumnGroup? column) {
+    return LayoutBuilder(
+      builder: (context, constraints) => Align(
+        alignment: Alignment.centerRight,
+        child: SizedBox(
+          width: _actionWidth,
+          height: constraints.maxHeight,
+          child: Material(
+            color: DepotBrand.redInk,
+            borderRadius: BorderRadius.circular(14),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => _openEditor(column),
+              child: const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.edit_outlined, color: Colors.white, size: 22),
+                  SizedBox(height: 3),
+                  Text(
+                    'Редактировать',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -2930,6 +6718,71 @@ DateTime? _parseDate(String text) {
   } catch (_) {
     return null;
   }
+}
+
+/// Полных лет и месяцев с даты начала работы. Дата расчёта берётся при
+/// построении карточки, поэтому стаж автоматически меняется каждый месяц.
+String? machinistExperienceLabel(String workStart, {DateTime? onDate}) {
+  final start = _parseDate(workStart);
+  final today = onDate ?? DateTime.now();
+  final currentDate = DateTime(today.year, today.month, today.day);
+  if (start == null || start.isAfter(currentDate)) return null;
+
+  var totalMonths =
+      (currentDate.year - start.year) * 12 + currentDate.month - start.month;
+  final lastDayOfCurrentMonth = DateTime(
+    currentDate.year,
+    currentDate.month + 1,
+    0,
+  ).day;
+  final anniversaryDay = start.day > lastDayOfCurrentMonth
+      ? lastDayOfCurrentMonth
+      : start.day;
+  if (currentDate.day < anniversaryDay) totalMonths -= 1;
+
+  final years = totalMonths ~/ 12;
+  final months = totalMonths % 12;
+  if (years == 0) return 'Стаж: $months ${_monthsWord(months)}';
+
+  final parts = ['Стаж: $years ${_yearsWord(years)}'];
+  if (months > 0) parts.add('$months ${_monthsWord(months)}');
+
+  return parts.join(' ');
+}
+
+/// Склоняет слово по числу: 1 колонна, 2 колонны, 5 колонн. Числа в сводке
+/// стоят рядом с подписью, и «24 колонн» читается как опечатка.
+String pluralRu(int value, String one, String few, String many) {
+  final lastTwoDigits = value % 100;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return many;
+
+  return switch (value % 10) {
+    1 => one,
+    2 || 3 || 4 => few,
+    _ => many,
+  };
+}
+
+String _yearsWord(int value) {
+  final lastTwoDigits = value % 100;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return 'лет';
+
+  return switch (value % 10) {
+    1 => 'год',
+    2 || 3 || 4 => 'года',
+    _ => 'лет',
+  };
+}
+
+String _monthsWord(int value) {
+  final lastTwoDigits = value % 100;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return 'месяцев';
+
+  return switch (value % 10) {
+    1 => 'месяц',
+    2 || 3 || 4 => 'месяца',
+    _ => 'месяцев',
+  };
 }
 
 String _formatDate(DateTime date, {required bool fourDigitYear}) {
@@ -2953,6 +6806,22 @@ String _couplingMark(Machinist machinist) {
     machinist.coupling,
     if (machinist.vn.isNotEmpty) '(${machinist.vn})',
   ].where((part) => part.isNotEmpty).join(' ');
+}
+
+/// Текстовое представление машиниста для копирования в буфер обмена.
+/// Доступно всем ролям (инструктор, разработчик, гость).
+String _machinistClipboardText(Machinist machinist) {
+  String value(String text) => text.trim().isEmpty ? '—' : text.trim();
+
+  return <String>[
+    machinist.fullName,
+    'начало работы: ${value(machinist.workStart)}',
+    'Класс: ${value(machinist.classRank)}',
+    'КИП: ${value(machinist.kip)}',
+    'АЗЗ: ${value(machinist.atz)}',
+    'Сцеп: ${value(machinist.coupling)}',
+    'ТРА: ${value(machinist.tra)}',
+  ].join('\n');
 }
 
 Future<Uint8List> _buildColumnPdfBytes(
@@ -3005,30 +6874,32 @@ Future<Uint8List> _buildColumnPdfBytes(
       for (final r in evaluateAllChecks(m)) r.discipline: r.status,
     };
     final couplingText = _couplingMark(m);
-    dataRows.add(pw.TableRow(
-      children: [
-        dCell('${i + 1}'),
-        nameCell(m.fullName),
-        dCell(m.workStart.isEmpty ? '—' : m.workStart),
-        dCell(m.classRank.isEmpty ? '—' : m.classRank),
-        dCell(
-          m.kip.isEmpty ? '—' : m.kip,
-          status: checks[CheckDiscipline.kip],
-        ),
-        dCell(
-          m.atz.isEmpty ? '—' : m.atz,
-          status: checks[CheckDiscipline.atz],
-        ),
-        dCell(
-          couplingText.isEmpty ? '—' : couplingText,
-          status: checks[CheckDiscipline.coupling],
-        ),
-        dCell(
-          m.tra.isEmpty ? '—' : m.tra,
-          status: checks[CheckDiscipline.tra],
-        ),
-      ],
-    ));
+    dataRows.add(
+      pw.TableRow(
+        children: [
+          dCell('${i + 1}'),
+          nameCell(m.fullName),
+          dCell(m.workStart.isEmpty ? '—' : m.workStart),
+          dCell(m.classRank.isEmpty ? '—' : m.classRank),
+          dCell(
+            m.kip.isEmpty ? '—' : m.kip,
+            status: checks[CheckDiscipline.kip],
+          ),
+          dCell(
+            m.atz.isEmpty ? '—' : m.atz,
+            status: checks[CheckDiscipline.atz],
+          ),
+          dCell(
+            couplingText.isEmpty ? '—' : couplingText,
+            status: checks[CheckDiscipline.coupling],
+          ),
+          dCell(
+            m.tra.isEmpty ? '—' : m.tra,
+            status: checks[CheckDiscipline.tra],
+          ),
+        ],
+      ),
+    );
   }
 
   final doc = pw.Document();
@@ -3040,9 +6911,7 @@ Future<Uint8List> _buildColumnPdfBytes(
         // Шапка: дата слева, название колонны по центру
         pw.Container(
           padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          decoration: pw.BoxDecoration(
-            border: pw.Border.all(width: 0.5),
-          ),
+          decoration: pw.BoxDecoration(border: pw.Border.all(width: 0.5)),
           child: pw.Row(
             children: [
               pw.Text(dateStr, style: bold(10)),
@@ -3080,7 +6949,7 @@ Future<Uint8List> _buildColumnPdfBytes(
                 hCell('Начало работы'),
                 hCell('Класс'),
                 hCell('КИП'),
-                hCell('АТЗ'),
+                hCell('АЗЗ'),
                 hCell('Сцеп'),
                 hCell('ТРА'),
               ],
@@ -3109,6 +6978,8 @@ class _KeyboardTextField extends StatefulWidget {
     this.obscureText = false,
     this.onChanged,
     this.onSubmitted,
+    this.textCapitalization = TextCapitalization.none,
+    this.style,
   });
 
   final TextEditingController controller;
@@ -3118,6 +6989,8 @@ class _KeyboardTextField extends StatefulWidget {
   final bool obscureText;
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
+  final TextCapitalization textCapitalization;
+  final TextStyle? style;
 
   @override
   State<_KeyboardTextField> createState() => _KeyboardTextFieldState();
@@ -3139,7 +7012,9 @@ class _KeyboardTextFieldState extends State<_KeyboardTextField> {
       focusNode: _focusNode,
       keyboardType: widget.keyboardType,
       textInputAction: widget.textInputAction,
+      textCapitalization: widget.textCapitalization,
       obscureText: widget.obscureText,
+      style: widget.style,
       decoration: widget.decoration,
       onChanged: widget.onChanged,
       onSubmitted: widget.onSubmitted,
@@ -3534,6 +7409,7 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
               _sectionTitle('Основное'),
               DropdownButtonFormField<String>(
                 initialValue: _columnId,
+                isExpanded: true,
                 decoration: const InputDecoration(
                   labelText: 'Колонна',
                   prefixIcon: Icon(Icons.train_outlined),
@@ -3544,7 +7420,11 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
                     enabled:
                         canChangeColumn ||
                         widget.user.canAddToColumn(column.id),
-                    child: Text(column.title),
+                    child: Text(
+                      column.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   );
                 }).toList(),
                 onChanged: canChangeColumn
@@ -3571,35 +7451,21 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
               ),
               const SizedBox(height: 8),
               _sectionTitle('Отметки о проведенных работах'),
-              _twoFields(
-                _field(_ticket, 'Талон', Icons.confirmation_number_outlined),
-                _dateField(_kip, 'КИП', Icons.build_circle_outlined),
-              ),
-              _twoFields(
-                _dateField(_tra, 'ТРА', Icons.route_outlined),
-                _dateField(_atz, 'АТЗ', Icons.local_gas_station_outlined),
-              ),
-              _dateField(_coupling, 'Сцеп', Icons.link),
-              _couplingToggles(),
-              const SizedBox(height: 8),
-              _sectionTitle('Приказ по КИП'),
-              SwitchListTile.adaptive(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                secondary: const Icon(Icons.gavel_outlined),
-                title: const Text('Продлить КИП на 12 месяцев'),
-                subtitle: const Text(
-                  'Только срок КИП будет считаться на год позже',
-                ),
-                value: _kipExtended,
-                onChanged: (value) => setState(() => _kipExtended = value),
-              ),
+              _field(_ticket, 'Талон', Icons.confirmation_number_outlined),
+              _dateField(_kip, 'КИП', MachinistIcons.kip),
+              _kipExtensionToggle(),
               if (_kipExtended)
                 _field(
                   _kipExtensionOrder,
                   'Приказ или распоряжение',
                   Icons.description_outlined,
                 ),
+              _twoFields(
+                _dateField(_tra, 'ТРА', MachinistIcons.tra),
+                _dateField(_atz, 'АЗЗ', MachinistIcons.atz),
+              ),
+              _dateField(_coupling, 'Сцеп', MachinistIcons.coupling),
+              _couplingToggles(),
               const SizedBox(height: 8),
               _sectionTitle('Дополнительно'),
               _field(_notes, 'Примечание', Icons.notes_outlined, maxLines: 3),
@@ -3642,6 +7508,27 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
     return '';
   }
 
+  Widget _kipExtensionToggle() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: AppPalette.surfaceTint,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppPalette.border),
+        ),
+        child: SwitchListTile.adaptive(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+          dense: true,
+          secondary: const Icon(Icons.gavel_outlined),
+          title: const Text('КИП на год по приказу'),
+          value: _kipExtended,
+          onChanged: (value) => setState(() => _kipExtended = value),
+        ),
+      ),
+    );
+  }
+
   Widget _couplingToggles() {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -3679,14 +7566,21 @@ class _MachinistEditorScreenState extends State<MachinistEditorScreen> {
       padding: const EdgeInsets.only(bottom: 12),
       child: DropdownButtonFormField<MachinistClass>(
         initialValue: _class,
+        isExpanded: true,
         decoration: const InputDecoration(
           labelText: 'Класс',
-          prefixIcon: Icon(Icons.workspace_premium_outlined),
+          prefixIcon: Icon(MachinistIcons.classRank),
         ),
         items: MachinistClass.values
             .map(
-              (value) =>
-                  DropdownMenuItem(value: value, child: Text(value.label)),
+              (value) => DropdownMenuItem(
+                value: value,
+                child: Text(
+                  value.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             )
             .toList(),
         onChanged: (value) {

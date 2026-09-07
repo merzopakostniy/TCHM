@@ -1,0 +1,19 @@
+openapi: 3.0.0
+info:
+  title: ТЧМ API
+  version: 1.0.0
+
+paths:
+  /{proxy+}:
+    x-yc-apigateway-any-method:
+      parameters:
+        - name: proxy
+          in: path
+          required: false
+          schema:
+            type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: d4eg2ekfn343t2lup3n8
+        tag: $latest
+        service_account_id: ajeeapegt0pqv8lnkc7r

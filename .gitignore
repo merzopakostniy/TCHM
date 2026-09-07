@@ -47,3 +47,13 @@ app.*.map.json
 # Android signing keys
 /android/key.properties
 /android/upload-keystore.jks
+
+# Ключи регистрации руководителей — не в репозиторий
+КЛЮЧИ_ДЕПО.txt
+
+# Ключ сервисного аккаунта Firebase
+tool/serviceAccount.json
+tool/node_modules/
+
+# Local Python test environment
+.venv/
