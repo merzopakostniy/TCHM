@@ -5552,7 +5552,7 @@ class _ColumnActionBar extends StatelessWidget {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(12),
+              shape: BoxShape.circle,
               border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
             ),
             child: Text(
@@ -5751,7 +5751,9 @@ class _ColumnsPane extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       padding: EdgeInsets.zero,
       itemCount: columns.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      // Зазор минимальный: тени карточек не должны наезжать друг на друга,
+      // но список читается как список, а не как отдельно летящие плитки.
+      separatorBuilder: (_, _) => const SizedBox(height: 5),
       itemBuilder: (context, index) {
         final column = columns[index];
         final selected = column.id == selectedColumnId;
@@ -5767,9 +5769,11 @@ class _ColumnsPane extends StatelessWidget {
         final soonCount = columnMachinists
             .where((item) => machinistOverallStatus(item) == CheckStatus.soon)
             .length;
+        // Радиус общий с подложкой свайп-действий, см. [kColumnCardRadius].
+        final radius = BorderRadius.circular(kColumnCardRadius);
         final card = DecoratedBox(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: radius,
             boxShadow: const [
               BoxShadow(
                 color: Color(0x0F1B1D20),
@@ -5780,14 +5784,14 @@ class _ColumnsPane extends StatelessWidget {
           ),
           child: Material(
             color: selected ? AppPalette.surfaceTint : Colors.white,
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: radius,
             child: InkWell(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: radius,
               onTap: () => onSelected(column.id),
               child: Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.fromLTRB(10, 10, 20, 10),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: radius,
                   border: Border.all(
                     color: selected ? AppPalette.accent : AppPalette.border,
                   ),
@@ -5798,13 +5802,13 @@ class _ColumnsPane extends StatelessWidget {
                       width: 42,
                       height: 42,
                       alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
                           colors: [DepotBrand.redLight, DepotBrand.redDeep],
                         ),
-                        borderRadius: BorderRadius.circular(12),
+                        shape: BoxShape.circle,
                       ),
                       child: Text(
                         '${column.number}',
@@ -6148,9 +6152,9 @@ class _ColumnEditorHeader extends StatelessWidget {
             width: 44,
             height: 44,
             alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(12),
+            decoration: const BoxDecoration(
+              color: Color(0x2EFFFFFF),
+              shape: BoxShape.circle,
             ),
             child: Text(
               '${column.number}',

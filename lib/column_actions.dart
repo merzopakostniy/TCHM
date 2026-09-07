@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+/// Радиус строки колонны. Значение общее для самой карточки и для клипа
+/// подложки со свайп-действиями: стоит им разойтись — красная подложка
+/// торчит из-под скруглённых торцов строки.
+const double kColumnCardRadius = 24;
+
 /// A short left swipe reveals actions; only a button press invokes them.
 class ColumnActions extends StatefulWidget {
   const ColumnActions({
@@ -83,7 +88,7 @@ class _ColumnActionsState extends State<ColumnActions>
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(kColumnCardRadius),
       child: Stack(
         children: [
           Positioned.fill(
