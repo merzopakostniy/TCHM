@@ -5,8 +5,6 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -65,7 +63,6 @@ class _TchmAppState extends State<TchmApp> {
     return AppDependencies(
       repository: repository,
       auth: auth,
-      firebaseReady: false,
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'ТЧМ',
@@ -290,13 +287,11 @@ class AppDependencies extends InheritedWidget {
     super.key,
     required this.repository,
     required this.auth,
-    required this.firebaseReady,
     required super.child,
   });
 
   final TchmRepository repository;
   final AppAuth auth;
-  final bool firebaseReady;
 
   static AppDependencies of(BuildContext context) {
     final deps = context.dependOnInheritedWidgetOfExactType<AppDependencies>();
@@ -306,9 +301,7 @@ class AppDependencies extends InheritedWidget {
 
   @override
   bool updateShouldNotify(AppDependencies oldWidget) {
-    return repository != oldWidget.repository ||
-        auth != oldWidget.auth ||
-        firebaseReady != oldWidget.firebaseReady;
+    return repository != oldWidget.repository || auth != oldWidget.auth;
   }
 }
 
@@ -660,7 +653,7 @@ class Machinist {
       'notes': notes,
       'kipExtensionMonths': kipExtensionMonths,
       'kipExtensionOrder': kipExtensionOrder,
-      'updatedAt': Timestamp.fromDate(updatedAt),
+      'updatedAt': updatedAt.toIso8601String(),
       'updatedBy': updatedBy,
       'searchName': fullName.toLowerCase(),
     };
@@ -692,8 +685,12 @@ class Machinist {
 }
 
 DateTime _dateFromValue(Object? value) {
-  if (value is Timestamp) return value.toDate();
   if (value is DateTime) return value;
+  // Раньше здесь ещё разбирался Timestamp из Firestore; строковый ISO-8601
+  // пришёл ему на смену вместе с переездом на собственный сервер.
+  if (value is String) {
+    return DateTime.tryParse(value) ?? DateTime.fromMillisecondsSinceEpoch(0);
+  }
   return DateTime.fromMillisecondsSinceEpoch(0);
 }
 
@@ -978,233 +975,6 @@ abstract class AppAuth {
   Future<void> signOut();
 }
 
-class FirebaseAppAuth implements AppAuth {
-  FirebaseAppAuth(this.firestore);
-
-  final FirebaseFirestore firestore;
-
-  @override
-  Stream<AppUser?> authStateChanges() {
-    // asyncExpand здесь не подходит: ref.snapshots() никогда не завершается,
-    // поэтому после выхода или ошибки чтения профиля новые события входа
-    // не доходили до AuthGate до перезапуска приложения.
-    late final StreamController<AppUser?> controller;
-    StreamSubscription<fb_auth.User?>? authSub;
-    StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? profileSub;
-
-    controller = StreamController<AppUser?>(
-      onListen: () {
-        authSub = fb_auth.FirebaseAuth.instance.authStateChanges().listen((
-          user,
-        ) {
-          profileSub?.cancel();
-          profileSub = null;
-          if (user == null) {
-            controller.add(null);
-            return;
-          }
-          final ref = firestore.collection('users').doc(user.uid);
-          profileSub = ref.snapshots().listen(
-            (snapshot) {
-              final data = snapshot.data();
-              if (data == null) {
-                // Документ профиля ещё не записан методом входа — отдаём
-                // временный профиль, но не пишем его в Firestore, чтобы
-                // не затереть роль, записываемую signInAsTchm/signInAsGuest.
-                controller.add(
-                  AppUser(
-                    id: user.uid,
-                    email: user.email ?? '',
-                    displayName:
-                        user.displayName ?? user.email ?? 'Пользователь',
-                    role: UserRole.viewer,
-                  ),
-                );
-                return;
-              }
-              controller.add(AppUser.fromMap(user.uid, data));
-            },
-            onError: (Object _) {
-              // Чтение профиля отклонено. Штатно так бывает при включённой
-              // полной блокировке для не-разработчика — показываем экран
-              // техработ, а не бесконечную загрузку. Роль разработчика
-              // читается правилами всегда, поэтому сюда он не попадает.
-              controller.add(
-                AppUser(
-                  id: user.uid,
-                  email: user.email ?? '',
-                  displayName: user.displayName ?? 'Пользователь',
-                  role: UserRole.viewer,
-                  accessBlocked: true,
-                ),
-              );
-            },
-          );
-        });
-      },
-      onCancel: () {
-        profileSub?.cancel();
-        authSub?.cancel();
-      },
-    );
-    return controller.stream;
-  }
-
-  /// Что реестр депо говорит про этот табельный номер.
-  Future<RosterEntry?> _rosterEntry(
-    String depotId,
-    String personnelNumber,
-  ) async {
-    try {
-      final snapshot = await firestore
-          .collection('roster')
-          .doc(RosterEntry.idFor(depotId, personnelNumber))
-          .get();
-      final data = snapshot.data();
-      if (data == null) return null;
-      return RosterEntry.fromMap(data);
-    } catch (_) {
-      // Реестр недоступен — не повод ронять регистрацию. Человек получит
-      // просмотр, роль ему поднимет руководитель.
-      return null;
-    }
-  }
-
-  @override
-  Future<void> signIn({required String email, required String password}) async {
-    try {
-      await fb_auth.FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: email.trim(),
-        password: password,
-      );
-    } on fb_auth.FirebaseAuthException catch (error) {
-      throw AuthException(_messageFor(error));
-    }
-  }
-
-  @override
-  Future<void> register(RegistrationRequest request) async {
-    // Ключ проверяется до создания учётной записи: иначе при неверном ключе
-    // в Firebase Auth останется висеть пользователь без профиля.
-    final grant = await const LocalInviteVerifier().verify(
-      depotId: request.depotId,
-      code: request.inviteCode,
-    );
-
-    final fb_auth.UserCredential credential;
-    try {
-      credential = await fb_auth.FirebaseAuth.instance
-          .createUserWithEmailAndPassword(
-            email: request.email.trim(),
-            password: request.password,
-          );
-    } on fb_auth.FirebaseAuthException catch (error) {
-      throw AuthException(_messageFor(error));
-    }
-
-    final user = credential.user;
-    if (user == null) {
-      throw const AuthException('Не удалось создать учётную запись.');
-    }
-
-    // Реестр главнее выбора: если человек в нём есть, роль берём оттуда, а
-    // выбранную в форме игнорируем. Нет записи — остаётся выбор, и тогда
-    // единственным барьером работает ключ.
-    final roster = request.personnelNumber.trim().isEmpty
-        ? null
-        : await _rosterEntry(grant.depotId, request.personnelNumber.trim());
-    final role = roster?.role ?? request.role;
-
-    await user.updateDisplayName(request.displayName);
-    await firestore
-        .collection('users')
-        .doc(user.uid)
-        .set(
-          AppUser(
-            id: user.uid,
-            email: request.email.trim(),
-            displayName: request.displayName,
-            role: role,
-            depotId: grant.depotId,
-            // Инструктор без своей колонны бесполезен, поэтому привязка
-            // переезжает из реестра — так роли переживают переход со
-            // старого входа по табельному на вход по почте.
-            assignedColumnId: roster?.assignedColumnId,
-            // Права выданы, но до подтверждения почты внутрь не пускаем.
-            status: AccountStatus.pending,
-            personnelNumber: request.personnelNumber.trim(),
-          ).toMap()
-            // Галочка, которую никто не записал, ничего не доказывает.
-            // Храним версию документов и время: через год иначе не
-            // установить, с каким именно текстом человек соглашался.
-            ..['consentVersion'] = legalDocsVersion
-            ..['consentAt'] = FieldValue.serverTimestamp(),
-          SetOptions(merge: true),
-        );
-    await user.sendEmailVerification();
-  }
-
-  @override
-  Future<void> sendPasswordReset(String email) async {
-    try {
-      await fb_auth.FirebaseAuth.instance.sendPasswordResetEmail(
-        email: email.trim(),
-      );
-    } on fb_auth.FirebaseAuthException catch (error) {
-      throw AuthException(_messageFor(error));
-    }
-  }
-
-  @override
-  Future<void> resendVerification() async {
-    final user = fb_auth.FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    await user.sendEmailVerification();
-  }
-
-  @override
-  Future<bool> refreshVerification() async {
-    final user = fb_auth.FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
-    await user.reload();
-    final refreshed = fb_auth.FirebaseAuth.instance.currentUser;
-    final verified = refreshed?.emailVerified ?? false;
-    if (verified) {
-      // Почта подтверждена — снимаем ожидание, чтобы AuthGate пропустил
-      // человека дальше. Проверять подтверждение правилами Firestore нельзя,
-      // поэтому статус хранится в профиле.
-      await firestore.collection('users').doc(refreshed!.uid).set({
-        'status': AccountStatus.active.name,
-      }, SetOptions(merge: true));
-    }
-    return verified;
-  }
-
-
-
-  String _messageFor(fb_auth.FirebaseAuthException error) {
-    return switch (error.code) {
-      'invalid-email' => 'Адрес почты введён неверно.',
-      'user-disabled' => 'Доступ для этой учётной записи закрыт.',
-      'user-not-found' ||
-      'wrong-password' ||
-      'invalid-credential' => 'Неверная почта или пароль.',
-      'email-already-in-use' =>
-        'На эту почту уже есть учётная запись. Войдите или восстановите пароль.',
-      'weak-password' => 'Пароль слишком простой — нужно не меньше 8 знаков.',
-      'network-request-failed' => 'Нет связи с сервером. Проверьте интернет.',
-      'too-many-requests' =>
-        'Слишком много попыток подряд. Попробуйте через несколько минут.',
-      _ => 'Не удалось выполнить вход: ${error.message ?? error.code}',
-    };
-  }
-
-  @override
-  Future<void> signOut() {
-    return fb_auth.FirebaseAuth.instance.signOut();
-  }
-}
-
 class DemoAppAuth implements AppAuth {
   DemoAppAuth() {
     _controller.add(null);
@@ -1326,7 +1096,7 @@ class AppLock {
     return {
       'writesBlocked': writesBlocked,
       'readsBlocked': readsBlocked,
-      'updatedAt': Timestamp.fromDate(DateTime.now()),
+      'updatedAt': DateTime.now().toIso8601String(),
       'updatedBy': author,
     };
   }
@@ -1388,244 +1158,6 @@ abstract class TchmRepository {
   Future<void> setLock(AppLock lock, AppUser user);
 }
 
-class FirebaseTchmRepository implements TchmRepository {
-  FirebaseTchmRepository(this.firestore, {this.depotId});
-
-  final FirebaseFirestore firestore;
-
-  /// Депо, данными которого работает этот репозиторий. Все запросы
-  /// ограничены им, поэтому чужие колонны и машинисты не приходят даже в
-  /// память приложения. Пусто только у разработчика — он работает поверх
-  /// всех депо, и правила это ему разрешают.
-  final String? depotId;
-
-  /// Ограничивает запрос своим депо. Правила Firestore устроены так, что
-  /// запрос без этого фильтра будет отклонён сервером целиком, а не
-  /// отфильтрован — то есть забыть его нельзя незаметно.
-  Query<Map<String, dynamic>> _scoped(String collection) {
-    final Query<Map<String, dynamic>> query = firestore.collection(collection);
-    if (depotId == null) return query;
-    return query.where('depotId', isEqualTo: depotId);
-  }
-
-  @override
-  Stream<List<ColumnGroup>> watchColumns() {
-    return _scoped('columns').snapshots().map((snapshot) {
-      final columns = snapshot.docs
-          .map((doc) => ColumnGroup.fromMap(doc.id, doc.data()))
-          .toList();
-      // Сортируем на клиенте: с фильтром по депо серверная сортировка
-      // потребовала бы составного индекса ради десятка документов.
-      columns.sort((a, b) => a.number.compareTo(b.number));
-      return columns;
-    });
-  }
-
-  @override
-  Stream<List<AppUser>> watchUsers() {
-    return _scoped('users').snapshots().map(
-      (snapshot) => snapshot.docs
-          .map((doc) => AppUser.fromMap(doc.id, doc.data()))
-          .toList(),
-    );
-  }
-
-  @override
-  Future<void> setAccountStatus({
-    required List<String> userIds,
-    required AccountStatus status,
-    required AppUser by,
-  }) async {
-    if (!by.role.canManageAccounts) {
-      throw StateError('Закрывать доступ может администратор или разработчик.');
-    }
-    final batch = firestore.batch();
-    for (final id in userIds) {
-      batch.set(firestore.collection('users').doc(id), {
-        'status': status.name,
-      }, SetOptions(merge: true));
-    }
-    await batch.commit();
-  }
-
-  @override
-  Future<void> deleteAccounts({
-    required List<String> userIds,
-    required AppUser by,
-  }) async {
-    if (!by.role.canManageAccounts) {
-      throw StateError('Удалять учётные записи может администратор или разработчик.');
-    }
-    final batch = firestore.batch();
-    for (final id in userIds) {
-      batch.delete(firestore.collection('users').doc(id));
-    }
-    await batch.commit();
-  }
-
-  @override
-  Stream<List<Machinist>> watchMachinists({String? columnId}) {
-    Query<Map<String, dynamic>> query = _scoped('machinists');
-    if (columnId != null) {
-      query = query.where('columnId', isEqualTo: columnId);
-    }
-    return query.snapshots().map((snapshot) {
-      final items = snapshot.docs.map(
-        (doc) => Machinist.fromMap(doc.id, doc.data()),
-      );
-      final sorted = items.toList()
-        ..sort((a, b) {
-          final byColumn = a.columnNumber.compareTo(b.columnNumber);
-          if (byColumn != 0) return byColumn;
-          return a.fullName.compareTo(b.fullName);
-        });
-      return sorted;
-    });
-  }
-
-  /// Идентификатор документа колонны с префиксом депо: у каждого депо свои
-  /// колонны с одинаковыми номерами, и без префикса они затирали бы друг
-  /// друга. У ТЧ-16 записи созданы до мультидепо и сохраняют прежние `id` —
-  /// их не трогаем, иначе потеряется связь с машинистами.
-  String _columnDocId(ColumnGroup column) {
-    return depotId == null ? column.id : '${depotId}_${column.id}';
-  }
-
-  @override
-  Future<void> createColumn({
-    required int number,
-    required AppUser user,
-  }) async {
-    if (!user.role.canEditAny) {
-      throw StateError('Создавать колонны может ТЧМ, оператор или админ.');
-    }
-    final depot = depotId ?? user.depotId;
-    if (depot == null) {
-      throw StateError('Не удалось определить депо.');
-    }
-    // Номер уникален внутри депо, поэтому он же и идентификатор документа:
-    // так две одновременные попытки завести колонну №5 не создадут дубль.
-    final ref = firestore.collection('columns').doc('${depot}_column_$number');
-    final existing = await ref.get();
-    if (existing.exists) {
-      throw StateError('Колонна №$number в депо уже есть.');
-    }
-    await ref.set(
-      ColumnGroup(
-        id: ref.id,
-        depotId: depot,
-        number: number,
-        title: 'Колонна №$number',
-        instructorName: '',
-        tchmName: user.displayName,
-        tchmPersonnelNumber: user.personnelNumber ?? '',
-      ).toMap(),
-    );
-  }
-
-  @override
-  Future<void> seedDefaults(AppUser user) async {
-    if (!user.role.canEditAny) {
-      throw StateError('Начальное заполнение доступно только ТЧМ/оператору.');
-    }
-    final batch = firestore.batch();
-    for (final column in SeedData.columns) {
-      batch.set(
-        firestore.collection('columns').doc(_columnDocId(column)),
-        column.toMap()..['depotId'] = depotId,
-        SetOptions(merge: true),
-      );
-    }
-    for (final machinist in SeedData.machinists) {
-      batch.set(
-        firestore.collection('machinists').doc(machinist.id),
-        machinist.toMap()..['depotId'] = depotId,
-        SetOptions(merge: true),
-      );
-    }
-    await batch.commit();
-  }
-
-  @override
-  Future<void> saveMachinist(Machinist machinist, AppUser user) async {
-    if (!user.canEditMachinist(machinist)) {
-      throw StateError('Нет прав на изменение этой колонны.');
-    }
-    final ref = machinist.id.isEmpty
-        ? firestore.collection('machinists').doc()
-        : firestore.collection('machinists').doc(machinist.id);
-    await ref.set(
-      machinist
-          .copyWith(
-            id: ref.id,
-            // Депо проставляем всегда: иначе новая запись останется без
-            // привязки и выпадет из выборки собственного депо.
-            depotId: machinist.depotId ?? depotId ?? user.depotId,
-            updatedAt: DateTime.now(),
-            updatedBy: user.displayName,
-          )
-          .toMap(),
-      SetOptions(merge: true),
-    );
-  }
-
-  @override
-  Future<void> deleteMachinist(Machinist machinist, AppUser user) async {
-    if (!user.canEditMachinist(machinist)) {
-      throw StateError('Нет прав на удаление из этой колонны.');
-    }
-    await firestore.collection('machinists').doc(machinist.id).delete();
-  }
-
-  @override
-  Future<void> updateColumn(ColumnGroup column, AppUser user) async {
-    // Раньше правка была только у разработчика, и когда ТЧМ увольнялся,
-    // колонну оставалось либо заводить заново, либо ждать его. Менять там
-    // нужно фамилию ведущего, а это работа самих ТЧМ депо.
-    if (!user.role.canEditAny) {
-      throw StateError('Изменять колонну может ТЧМ, оператор или админ.');
-    }
-    // Чужое депо не правим даже с правами: у разработчика репозиторий без
-    // фильтра, и промах по колонне соседнего депо ничем бы не остановился.
-    final target = column.depotId ?? depotId;
-    if (!user.role.canManageAllDepots && target != null && target != user.depotId) {
-      throw StateError('Колонна принадлежит другому депо.');
-    }
-    await firestore
-        .collection('columns')
-        .doc(column.id)
-        .set(
-          column.toMap()..['depotId'] = target,
-          SetOptions(merge: true),
-        );
-  }
-
-  @override
-  Future<void> deleteColumn(ColumnGroup column, AppUser user) async {
-    throw UnsupportedError('Удаление колонн доступно через основной API.');
-  }
-
-  DocumentReference<Map<String, dynamic>> get _lockDoc =>
-      firestore.collection('config').doc('app');
-
-  @override
-  Stream<AppLock> watchLock() {
-    return _lockDoc
-        .snapshots()
-        .map((doc) => AppLock.fromMap(doc.data()))
-        .handleError((Object _) {});
-  }
-
-  @override
-  Future<void> setLock(AppLock lock, AppUser user) async {
-    if (!user.role.canManageDatabaseLock) {
-      throw StateError('Режим обслуживания доступен только разработчику.');
-    }
-    await _lockDoc.set(lock.toMap(user.displayName), SetOptions(merge: true));
-  }
-}
-
-/// Демо-репозиторий: депо не разделяет, всё живёт в памяти одного запуска.
 class LocalTchmRepository implements TchmRepository {
   LocalTchmRepository()
     : _columns = [...SeedData.columns],
@@ -1938,27 +1470,6 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  TchmRepository? _depotRepository;
-  String? _depotRepositoryFor;
-
-  /// Репозиторий, привязанный к депо вошедшего человека: и просмотр, и
-  /// правка идут только по своему депо. Держим его между перестроениями —
-  /// иначе на каждый кадр пересоздавались бы подписки на Firestore.
-  TchmRepository _repositoryFor(AppUser user, AppDependencies deps) {
-    final base = deps.repository;
-    // Разработчик работает поверх всех депо, демо-режим живёт в памяти, а у
-    // нового API депо навязывает сервер по профилю — им подмена не нужна.
-    if (user.role.canManageAllDepots || base is! FirebaseTchmRepository) return base;
-    if (_depotRepository != null && _depotRepositoryFor == user.depotId) {
-      return _depotRepository!;
-    }
-    _depotRepositoryFor = user.depotId;
-    return _depotRepository = FirebaseTchmRepository(
-      base.firestore,
-      depotId: user.depotId,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final deps = AppDependencies.of(context);
@@ -1990,11 +1501,10 @@ class _AuthGateState extends State<AuthGate> {
         final screen = user.role.canManageAllDepots
             ? DepotOverviewScreen(user: user)
             : HomeScreen(user: user);
-        final repository = _repositoryFor(user, deps);
+        final repository = deps.repository;
         return AppDependencies(
           repository: repository,
           auth: deps.auth,
-          firebaseReady: deps.firebaseReady,
           // Разработчик работает поверх всех депо, поэтому список колонн для
           // него бессмыслен: в него сваливаются колонны всех депо разом, без
           // подписи, чьи они. Ему первым экраном — депо, колонны внутри.

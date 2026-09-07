@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Объявлено явно. Раньше разрешение приезжало в итоговый манифест
+         транзитивно от библиотек Firebase/Google; с их удалением оно бы
+         пропало, и релизная сборка осталась бы без сети молча. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="ТЧМ"
         android:name="${applicationName}"

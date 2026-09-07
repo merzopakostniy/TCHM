@@ -38,7 +38,6 @@ void main() {
       AppDependencies(
         repository: repository,
         auth: DemoAppAuth(),
-        firebaseReady: false,
         child: MaterialApp(
           theme: buildAppTheme(),
           home: DepotColumnsScreen(

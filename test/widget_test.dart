@@ -396,6 +396,5 @@ void main() {
 Widget _demoApp() => AppDependencies(
   repository: LocalTchmRepository(),
   auth: DemoAppAuth(),
-  firebaseReady: false,
   child: MaterialApp(theme: buildAppTheme(), home: const AuthGate()),
 );

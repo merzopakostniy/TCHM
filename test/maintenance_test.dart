@@ -38,7 +38,6 @@ void main() {
         AppDependencies(
           auth: DemoAppAuth(),
           repository: repository,
-          firebaseReady: false,
           child: MaterialApp(
             home: ApiMaintenanceGate(
               repository: repository,

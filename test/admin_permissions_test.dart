@@ -49,7 +49,6 @@ void main() {
         AppDependencies(
           repository: LocalTchmRepository(),
           auth: DemoAppAuth(),
-          firebaseReady: false,
           child: MaterialApp(
             home: DepotOverviewScreen(
               user: AppUser(

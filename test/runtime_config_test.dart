@@ -28,7 +28,6 @@ void main() {
     await tester.pumpWidget(AppDependencies(
       repository: repository,
       auth: ApiAppAuth(ApiClient()),
-      firebaseReady: false,
       child: const MaterialApp(home: LoginScreen()),
     ));
     await tester.pumpAndSettle();
